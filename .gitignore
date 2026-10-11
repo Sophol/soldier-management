@@ -1,0 +1,17 @@
+# secrets / local env
+.env
+backend/.env
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# uploads
+backend/storage/
+# node
+frontend/node_modules/
+frontend/dist/
+# legacy dump with real citizen personal data – never commit
+member_db.sql
+.DS_Store

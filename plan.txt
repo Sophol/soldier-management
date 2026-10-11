@@ -1,0 +1,521 @@
+================================================================================
+ SOLDIER MANAGEMENT SYSTEM (ប្រព័ន្ធគ្រប់គ្រងយោធិន)
+ Office of Appointment, Transfer and Rank Promotion
+ (ការិយាល័យតែងតាំង ផ្លាស់ប្ដូរ និងដំឡើងឋានន្តរស័ក្តិ)
+ Project Plan — v1 (2026-10-10)
+================================================================================
+
+Stack:  Backend  Python 3.12 + FastAPI
+        Frontend Vue 3 (Vite)
+        Database MySQL 8 (utf8mb4)
+
+Sources reviewed:
+  - brainstorm.txt            : top-level modules wanted (9 menus)
+  - 001រចនាសម្ព័ន្ធ.txt         : detailed menus, soldier fields, doc fields, settings
+  - provinces.sql / districts.sql / communes.sql / villages (1).sql
+                              : Cambodian administrative geography (inva_db, 2021)
+  - member_db.sql             : an older Laravel population/party-member system
+
+
+--------------------------------------------------------------------------------
+1. REVIEW OF THE INPUT FILES
+--------------------------------------------------------------------------------
+
+1.1 Feature lists (brainstorm.txt + 001រចនាសម្ព័ន្ធ.txt)
+  The two lists overlap but each has items the other lacks. Merged menu is in
+  section 3. Notes:
+  - brainstorm.txt numbering repeats ៧ and ៨. Read as: Dashboard + 1..8 modules
+    + Summary report + Settings + About.
+  - 001 adds: organisation structure (unit hierarchy, ranks, positions,
+    specialties, document types), detailed field lists, "increase/decrease"
+    (ការងារកើនថយ), training sub-menus, A4 profile printing, permissions, geo setup.
+  - brainstorm adds: discipline (វិន័យទណ្ឌកម្ម), awards/medals
+    (សរសើរ និងគ្រឿងឥស្សរិយយស), pension & category-2 soldiers
+    (សោធននិវត្តន៍ និងយោធិនប្រភេទ២), soldiers leaving service (ចេញពីជួរ).
+  - 001 says step 1 = set up the project structure only (no full UI, no CRUD
+    yet). Phase 0 below follows that.
+
+1.2 Geography SQL files (USE THESE as master data)
+  Source: phpMyAdmin dump of `inva_db` (MariaDB 10.4, Oct 2021).
+    provinces   25 rows   id 1..25                (name, name_en, is_city)
+    districts  205 rows   id = province*100 + n   e.g. 102
+    communes  1683 rows   id = district*100 + n   e.g. 10201
+    villages 14760 rows   id = commune*100 + n    e.g. 1020101
+  Issues to fix on import:
+  - Charset is utf8 (utf8mb3) per column -> convert to utf8mb4/utf8mb4_unicode_ci.
+  - No FOREIGN KEY constraints -> add FKs + indexes on parent id.
+  - Phnom Penh has is_city = 0 -> set is_city = 1 for Phnom Penh (and review
+    others; in Cambodia the capital is "រាជធានី", others "ខេត្ត"; districts
+    may be ស្រុក/ក្រុង/ខណ្ឌ and communes ឃុំ/សង្កាត់ -> add a `type` column).
+  - Data is from 2021; administrative changes since then need to be editable
+    in Settings (CRUD on geography), not hard-coded.
+  - Keep the hierarchical code ids as-is (they mirror official NCDD-style codes).
+
+1.3 member_db.sql (DO NOT import its people data)
+  It is a different system (population / party members): tables communes,
+  countries, districts, families, jobs, members (3,767 citizens with national
+  ID numbers), provinces, roles, role_permissions, users (55, bcrypt hashes).
+  - Its geography copy is OLDER and smaller (197 districts, 1633 communes,
+    14077 villages; village name_en is Khmer duplicated) -> ignore it.
+  - members/families contain real personal data unrelated to soldiers ->
+    do not migrate. Keep the dump out of the git repo.
+  - Useful ideas to reuse:
+      * countries table (for "studied abroad" / foreign training) -> import.
+      * jobs table (occupations: កសិករ, កម្មករ, គ្រូបង្រៀន, ...) -> reuse as the
+        lookup for spouse occupation (មុខរបរ).
+      * roles (Super Admin, Admin, Technical, Operator, Viewer) and
+        role_permissions(permission_key, action JSON ["1".."5"]) -> same
+        concept, redesigned (section 6).
+      * users.level (0=super admin, 1=national, 2=province ... ) -> becomes
+        "data scope by unit" in our system.
+
+
+--------------------------------------------------------------------------------
+2. GOALS AND SCOPE
+--------------------------------------------------------------------------------
+  - One web app for the office to manage soldier records, incoming/outgoing
+    official documents, appointment/transfer/promotion decisions, training,
+    discipline, awards, retirement and separations, with reports.
+  - Khmer-first UI (Khmer labels, Khmer numerals option, Khmer dates),
+    English as secondary language.
+  - Every change to a soldier's rank/position/unit/status goes through a
+    recorded "decision" (history), never by silently editing the profile.
+  - Role-based permissions: view / create / edit / delete / search / print /
+    export per module, limited to the user's unit scope.
+  - Runs on the office intranet; must work without internet (self-host fonts
+    and all JS/CSS assets).
+
+
+--------------------------------------------------------------------------------
+3. MENU STRUCTURE (merged)
+--------------------------------------------------------------------------------
+  0. ផ្ទាំងគ្រប់គ្រង Dashboard
+  1. រចនាសម្ព័ន្ធក្របខណ្ឌ  (Organisation structure / master data)
+       1.1 ស្ថាប័នកងឯកភាព   unit tree: ស្ថាប័នកងឯកភាព > អង្គភាព > អង្គភាពរង
+                           > អង្គភាពចំណុះផ្ទាល់
+       1.2 ឋានន្តរស័ក្តិ     3 classes: នាយទាហាន / នាយទាហានរង / ពលទាហាន
+       1.3 មុខតំណែង
+       1.4 ជំនាញឯកទេស
+       1.5 ប្រភេទឯកសារ
+  2. ឯកសារគតិយុទ្ធ  (Official documents)
+       2.1 ឯកសារចូល (incoming)
+       2.2 ឯកសារចេញ (outgoing)
+       (list view grouped/filtered by document type)
+  3. គ្រប់គ្រងយោធិន  (Soldiers)
+       3.1 បញ្ជីយោធិន (list / search / filter)
+       3.2 បញ្ចូល/កែប្រែប្រវត្តិរូប (profile form, tabbed)
+       3.3 ប្រវត្តិរូបសង្ខេប – print A4
+       3.4 ការងារកើនថយ (strength in/out movement)
+  4. ការងារតែងតាំង ផ្លាស់ប្ដូរ និងដំឡើងឋានន្តរស័ក្តិ
+       4.1 តែងតាំងមុខតំណែង (appointment)
+       4.2 ផ្លាស់ប្ដូរមុខតំណែង / កងឯកភាព (transfer)
+       4.3 ដំឡើងឋានន្តរស័ក្តិ (rank promotion)
+  5. ការងារបណ្ដុះបណ្ដាល (Training)
+       5.1 កម្រិតវប្បធម៌   5.2 ជំនាញឯកទេស
+       5.3 វគ្គរយៈពេលវែង   5.4 វគ្គរយៈពេលខ្លី
+  6. ការងារវិន័យ និងទណ្ឌកម្ម (Discipline)
+  7. ការងារសរសើរ និងគ្រឿងឥស្សរិយយស (Commendations & medals)
+  8. ការងារសោធននិវត្តន៍ និងយោធិនប្រភេទ២ (Retirement / category-2)
+  9. យោធិនចេញពីជួរ (Separation: discharge, resignation, death, desertion …)
+ 10. របាយការណ៍ (Reports)
+ 11. ការកំណត់ (Settings)
+       users, roles & permissions, geography (រាជធានី/ខេត្ត > ស្រុក/ខណ្ឌ >
+       ឃុំ/សង្កាត់ > ភូមិ), lookups (blood types, languages, education levels,
+       countries, occupations, document types…), system info, audit log, backup
+ 12. អំពីយើង (About)
+
+
+--------------------------------------------------------------------------------
+4. ARCHITECTURE
+--------------------------------------------------------------------------------
+  Browser (Vue 3 SPA) --HTTPS/JSON--> FastAPI --SQLAlchemy--> MySQL 8
+                                         |--> /storage (photos, attachments)
+                                         |--> PDF (WeasyPrint), Excel (openpyxl)
+
+  Backend
+    - FastAPI, Pydantic v2, SQLAlchemy 2.x (ORM), Alembic (migrations)
+    - Driver: PyMySQL (or asyncmy if going async; recommend sync + threadpool
+      for simplicity)
+    - Auth: JWT access token (short) + refresh token; passwords with bcrypt
+      (passlib/bcrypt)
+    - PDF: WeasyPrint (HTML/CSS -> PDF; renders Khmer shaping correctly via
+      Pango/HarfBuzz) with Jinja2 templates for A4 profile & decision letters
+    - Excel export: openpyxl; Word (optional) python-docx
+    - Tests: pytest + httpx TestClient; lint: ruff; format: black/ruff format
+
+  Frontend
+    - Vue 3 + Vite + TypeScript, Vue Router, Pinia
+    - UI kit: Element Plus (tables, tree, forms, date pickers, upload)
+    - vue-i18n (km default, en)
+    - axios with token interceptor; route guards by permission
+    - Charts: ECharts (vue-echarts) for dashboard
+    - Fonts: Kantumruy Pro / Noto Sans Khmer (UI), Khmer OS Muol Light for
+      official headings — bundled locally
+
+  Database
+    - MySQL 8, utf8mb4 / utf8mb4_unicode_ci, InnoDB, FK constraints on
+    - Soft delete (deleted_at) on business tables; created_by/updated_by on all
+    - Daily mysqldump backup + storage folder backup
+
+  Deployment
+    - Docker Compose: mysql, api (uvicorn/gunicorn), web (nginx serving the
+      built SPA + reverse proxy /api)
+    - Intranet server; HTTPS with internal certificate
+
+
+--------------------------------------------------------------------------------
+5. DATABASE DESIGN (main tables)
+--------------------------------------------------------------------------------
+  Conventions: id BIGINT PK, created_at, updated_at, created_by, updated_by,
+  deleted_at (where soft delete applies). Khmer name `name_kh`, `name_en`.
+
+  5.1 Geography (imported)
+    provinces(id, name_kh, name_en, type[រាជធានី/ខេត្ត], active)
+    districts(id, province_id FK, name_kh, name_en, type[ស្រុក/ក្រុង/ខណ្ឌ], active)
+    communes (id, district_id FK, name_kh, name_en, type[ឃុំ/សង្កាត់], active)
+    villages (id, commune_id FK, name_kh, name_en, active)
+    countries(id, name_kh, name_en)
+    addresses are stored as (village_id + free text house/street); province/
+    district/commune are derived from the village code — or stored
+    denormalised for fast filtering.
+
+  5.2 Organisation / master data
+    units(id, parent_id FK self, level[1 ស្ថាប័នកងឯកភាព, 2 អង្គភាព,
+          3 អង្គភាពរង, 4 អង្គភាពចំណុះផ្ទាល់], code, name_kh, name_en,
+          sort_order, active)               -- tree; path/closure for subtree queries
+    rank_classes(id, name_kh)               -- នាយទាហាន, នាយទាហានរង, ពលទាហាន
+    ranks(id, rank_class_id, name_kh, name_en, short_kh, insignia_image,
+          sort_order, min_years_to_next)    -- min_years drives promotion alerts
+    positions(id, name_kh, name_en, level/grade, sort_order)
+    specialties(id, name_kh, name_en)       -- ជំនាញឯកទេស
+    document_types(id, name_kh, direction[in/out/both])
+    education_levels, languages, blood_types, marital_statuses,
+    soldier_statuses(id, name_kh)  -- e.g. កំពុងបម្រើការ, សិក្សា, ព្យួរ, និវត្តន៍, ចេញពីជួរ
+    jobs (occupations, seeded from member_db.jobs)
+    award_types, discipline_types, separation_reasons, course_types
+
+  5.3 Soldiers (fields from 001)
+    soldiers
+      id, military_id (អត្តលេខ, UNIQUE), name_kh (គោត្តនាមនិងនាម),
+      name_latin, gender, date_of_birth, national_id (UNIQUE NULL),
+      birth_village_id + birth_place_text, current_village_id + address_text,
+      photo_path, blood_type_id, phone,
+      current_rank_id, rank_date (ថ្ងៃឡើងស័ក្តិ),
+      current_position_id, position_date,
+      current_unit_id, unit_transfer_date (ថ្ងៃផ្លាស់ប្ដូរកងឯកភាព),
+      from_unit_text (មកពីស្ថាប័នកងឯកភាព),
+      enlistment_date (ថ្ងៃចូលបម្រើទ័ព),
+      status_id, education_level_id, specialty_id,
+      combat_veteran (ឆ្លងប្រយុទ្ធ, bool + note),
+      marital_status_id, spouse_name, spouse_job_id, children_count,
+      father_name, mother_name, notes (បន្ថែមប្រវត្តិផ្សេងៗ)
+    Computed (NOT stored; calculated in API/SQL views):
+      age, service length (រយៈពេលបម្រើការងារ), time in current rank
+      (រយៈពេលឡើងស័ក្តិ)
+    Child tables (1-to-many):
+      soldier_educations(level, specialty, institution, country_id,
+                         domestic/abroad, start, end, duration)
+                         -> covers រយៈពេលសិក្សា, សិក្សាក្នុងនិងក្រៅប្រទេស,
+                            ក្រៅពីជំនាញឯកទេស
+      soldier_languages(language_id, level)
+      soldier_children(name, gender, dob)   (optional detail behind count)
+      soldier_attachments(file_path, file_name, doc_type, uploaded_by)
+      soldier_rank_history, soldier_position_history, soldier_unit_history
+        (written by decisions in 5.5; current_* fields on soldiers are a cache
+         of the latest history row)
+    ប័ណ្ណសរសើរ / លិខិតសរសើរ come from the awards module (5.7) — do not keep
+    them as free text on the profile.
+
+  5.4 Official documents
+    documents_incoming(id, incoming_no (លេខឯកសារចូល), subject (ខ្លឹមសារ),
+      doc_date, received_date, document_type_id, from_unit (text or unit_id),
+      status, remarks)
+    documents_outgoing(id, outgoing_no (លេខ), subject, doc_date,
+      document_type_id, unit_id, recipient_name, recipient_phone,
+      status, remarks)
+    document_files(id, document_kind[in/out], document_id, path, name, size)
+    Numbering: configurable format e.g. "{seq}/{yy} ក.ត.ផ" with yearly reset;
+    UNIQUE (number, year).
+
+  5.5 Decisions (appointment / transfer / promotion)
+    decisions(id, kind[appoint, transfer, promote, ...], decision_no,
+      decision_date, effective_date, issued_by, outgoing_document_id NULL,
+      attachment, status[draft, approved, cancelled], notes)
+    decision_items(id, decision_id, soldier_id,
+      old_rank_id, new_rank_id,
+      old_position_id, new_position_id,
+      old_unit_id, new_unit_id)
+    One decision can cover many soldiers (a list in a ប្រកាស/ដីកា).
+    On "approve": write history rows + update soldiers.current_* in one
+    transaction. Cancelling reverts.
+
+  5.6 Training
+    training_courses(id, name, course_type[long/short], specialty_id,
+      institution, country_id, start_date, end_date)
+    training_participants(course_id, soldier_id, result, certificate_no,
+      certificate_file)
+
+  5.7 Discipline, awards
+    discipline_records(id, soldier_id, discipline_type_id, reason,
+      decision_no, decision_date, start_date, end_date, attachment)
+    award_records(id, soldier_id, award_type_id [ប័ណ្ណសរសើរ, លិខិតសរសើរ,
+      មេដាយ ...], decision_no, decision_date, reason, attachment)
+
+  5.8 Retirement, category 2, separation, strength movement
+    retirement_records(id, soldier_id, type[pension, category2],
+      decision_no, decision_date, effective_date, pension_amount?, notes)
+    separation_records(id, soldier_id, reason_id[discharge, resign, death,
+      desertion, transfer out of ministry...], decision_no, date, notes)
+    strength_movements(id, soldier_id, direction[in/out], reason, date,
+      source_table, source_id)   -- feeds ការងារកើនថយ monthly report;
+      written automatically by recruit / transfer / retire / separate actions.
+
+  5.9 Security & audit
+    users(id, username UNIQUE, password_hash, full_name, phone,
+      soldier_id NULL, role_id, unit_scope_id NULL (NULL = all units),
+      active, last_login_at)
+    roles(id, name, description)
+    permissions(id, module_key, action[view, create, update, delete,
+      search, print, export, approve])
+    role_permissions(role_id, permission_id)
+    audit_logs(id, user_id, action, table_name, record_id, before JSON,
+      after JSON, ip, created_at)
+
+
+--------------------------------------------------------------------------------
+6. PERMISSIONS
+--------------------------------------------------------------------------------
+  - Module keys: dashboard, org_units, ranks, positions, specialties,
+    doc_types, doc_in, doc_out, soldiers, strength, decisions_appoint,
+    decisions_transfer, decisions_promote, training, discipline, awards,
+    retirement, separation, reports, users, roles, geography, settings.
+  - Actions (from 001: ប្រើប្រាស់ បង្កើត បញ្ចូល កែប្រែ លុប ស្វែងរក):
+    view, create, update, delete, search, print, export, approve.
+  - Default roles (from member_db, adapted):
+      Super Admin  – everything
+      Admin        – everything except system settings/roles
+      Officer      – create/update in assigned modules, no delete/approve
+      Approver     – approve decisions
+      Viewer       – view, search, print
+  - Unit scope: a user tied to a unit only sees soldiers/documents of that
+    unit's subtree (enforced in the API query layer, not only in the UI).
+  - Matrix screen in Settings: roles x modules x actions checkboxes.
+
+
+--------------------------------------------------------------------------------
+7. KEY FEATURES & BUSINESS RULES
+--------------------------------------------------------------------------------
+  Dashboard
+    - Totals: soldiers by status, by rank class, by gender, by unit
+    - Documents in/out this month; pending decisions
+    - Alerts: soldiers due for promotion (time in rank >= ranks.min_years_to_next),
+      nearing retirement age (configurable ages by rank class/gender),
+      discipline periods ending, missing photo/ID data
+  Soldier profile
+    - Tabbed form: general, service (rank/position/unit), education &
+      languages, family, awards/discipline (read-only from modules),
+      attachments, history timeline
+    - Photo upload with crop; Khmer + Latin name; duplicate checks on
+      military_id and national_id
+    - Advanced search: name (Khmer/Latin), military id, rank, unit subtree,
+      position, status, age range, enlistment year, specialty, province of birth
+    - Print A4 summary profile (ប្រវត្តិរូបសង្ខេប) with photo, official Khmer
+      header (ព្រះរាជាណាចក្រកម្ពុជា / ជាតិ សាសនា ព្រះមហាក្សត្រ)
+  Decisions
+    - Create decision -> add soldiers -> preview old/new values -> approve
+    - Validation: new rank must be higher than current for promotion; warn if
+      time-in-rank is below minimum; unit/position must be active
+    - Generate the decision letter / annex list as PDF
+  Documents
+    - Auto-number outgoing docs; attach PDF/scans; link to decisions
+    - Search by number, date range, type, unit, keyword in subject
+  Reports (PDF + Excel)
+    - Strength report by unit and rank (តារាងកម្លាំង)
+    - Monthly increase/decrease (កើនថយ) report
+    - Promotions / appointments / transfers in a period
+    - Training, discipline, awards, retirement, separation lists
+    - Upcoming promotion & retirement lists
+  Khmer specifics
+    - Khmer numerals (០១២...) display option; Khmer month names; Buddhist
+      calendar optional
+    - Sorting Khmer names: utf8mb4_unicode_ci (verify sort order with users;
+      consider utf8mb4_0900_ai_ci on MySQL 8)
+
+
+--------------------------------------------------------------------------------
+8. PROJECT FOLDER STRUCTURE
+--------------------------------------------------------------------------------
+  soldier-management/
+    backend/
+      app/
+        main.py
+        core/          config.py, security.py, database.py, deps.py
+        models/        SQLAlchemy models (geo, org, soldier, document,
+                       decision, training, discipline, award, retirement,
+                       separation, user, audit)
+        schemas/       Pydantic schemas per module
+        api/v1/        routers: auth, dashboard, geo, units, ranks, positions,
+                       specialties, doc_types, documents, soldiers, decisions,
+                       training, discipline, awards, retirement, separation,
+                       reports, users, roles, settings
+        services/      business logic (decision approval, numbering,
+                       computed fields, permissions/scope)
+        reports/       Jinja2 HTML templates + PDF/Excel builders
+        static/fonts/  Khmer fonts for PDF
+      alembic/         migrations
+      scripts/
+        import_geo.py  load the 4 geography .sql files -> new tables
+        seed.py        ranks, roles, permissions, lookups, admin user
+      storage/         uploads (gitignored)
+      tests/
+      requirements.txt / pyproject.toml, .env.example
+    frontend/
+      src/
+        main.ts, App.vue
+        router/        routes + permission guards
+        stores/        auth, lookups, app
+        api/           axios client + module services
+        layouts/       MainLayout (sidebar menu, header), AuthLayout
+        views/         dashboard, org, documents, soldiers, decisions,
+                       training, discipline, awards, retirement, separation,
+                       reports, settings, about
+        components/    common (DataTable, SearchBar, UnitTreeSelect,
+                       GeoCascader, FileUpload, ConfirmDialog)
+        i18n/          km.json, en.json
+        assets/fonts/
+      vite.config.ts, package.json
+    database/
+      source/          the original .sql files (read-only reference;
+                       member_db.sql NOT committed)
+    docker-compose.yml
+    README.md
+    plan.txt
+
+
+--------------------------------------------------------------------------------
+9. API OUTLINE (REST, /api/v1)
+--------------------------------------------------------------------------------
+  POST   /auth/login, /auth/refresh, GET /auth/me
+  GET    /geo/provinces, /geo/provinces/{id}/districts,
+         /geo/districts/{id}/communes, /geo/communes/{id}/villages
+  CRUD   /units (+ GET /units/tree), /ranks, /positions, /specialties,
+         /document-types, /lookups/{name}
+  CRUD   /documents/incoming, /documents/outgoing (+ /files upload)
+  CRUD   /soldiers (filters, paging, sort) ; GET /soldiers/{id}/history ;
+         GET /soldiers/{id}/profile.pdf ; POST /soldiers/{id}/photo
+  CRUD   /decisions ; POST /decisions/{id}/approve ; /decisions/{id}/cancel ;
+         GET /decisions/{id}/letter.pdf
+  CRUD   /training/courses (+ participants), /discipline, /awards,
+         /retirements, /separations
+  GET    /dashboard/summary, /dashboard/alerts
+  GET    /reports/{report_key}?format=pdf|xlsx&...
+  CRUD   /users, /roles ; PUT /roles/{id}/permissions ; GET /audit-logs
+  All list endpoints: ?page=&size=&q=&sort= ; responses include total.
+
+
+--------------------------------------------------------------------------------
+10. IMPLEMENTATION PHASES
+--------------------------------------------------------------------------------
+  Phase 0 – Project skeleton  (≈1 week)   [matches 001 "step 1"]
+    - Repo, docker-compose (MySQL 8, api, web), .env config
+    - FastAPI app skeleton, DB connection, Alembic init, health endpoint
+    - Vue 3 + Vite + Element Plus + i18n + router + Pinia
+    - Main layout with the full sidebar menu/submenus (section 3) and empty
+      placeholder pages for each item
+    - Khmer fonts wired in UI and PDF
+  Phase 1 – Foundation  (≈2 weeks)
+    - Auth (login/JWT), users, roles, permission matrix, unit scoping, audit log
+    - Geography import script (from the 4 standalone .sql files) + geo API +
+      GeoCascader component + geography CRUD in Settings
+    - Master data: unit tree, rank classes/ranks, positions, specialties,
+      document types, lookups; seed data
+  Phase 2 – Soldiers  (≈3 weeks)
+    - Soldier CRUD with all fields, child tables, photo & attachments
+    - List/search/filter, computed age/service/time-in-rank
+    - A4 profile PDF; Excel export of list
+  Phase 3 – Documents  (≈1.5 weeks)
+    - Incoming/outgoing CRUD, numbering, attachments, search
+  Phase 4 – Decisions  (≈2.5 weeks)
+    - Appointment, transfer, promotion with approve/cancel, history,
+      decision letter PDF, strength movements
+  Phase 5 – Training, discipline, awards  (≈2 weeks)
+  Phase 6 – Retirement/category-2, separation, increase/decrease  (≈1.5 weeks)
+  Phase 7 – Dashboard & reports  (≈2 weeks)
+  Phase 8 – Hardening & go-live  (≈2 weeks)
+    - Tests for decision logic & permissions, backup/restore drill,
+      performance check (search on tens of thousands of soldiers),
+      user acceptance testing with the office, data entry/import of existing
+      soldier lists (Excel import template), training for staff, deployment
+  Total estimate: ~4–5 months for one full-stack developer.
+
+
+--------------------------------------------------------------------------------
+11. DATA MIGRATION / SEEDING
+--------------------------------------------------------------------------------
+  - Geography: parse the 4 standalone .sql files (inva_db) into a staging
+    DB, then INSERT ... SELECT into the new tables (rename name -> name_kh,
+    add type, fix Phnom Penh is_city/type). Verify counts 25/205/1683/14760
+    and that every child's parent id exists.
+  - countries and jobs: copy from member_db.sql (lookup data only).
+  - Ranks / positions / units / specialties: seed from a list provided by the
+    office (see open questions).
+  - Existing soldier records: provide an Excel template matching section 5.3
+    and an import tool with validation report.
+
+
+--------------------------------------------------------------------------------
+12. SECURITY & PRIVACY
+--------------------------------------------------------------------------------
+  - Soldier data is sensitive: intranet only, HTTPS, strong passwords,
+    lockout after failed logins, session timeout.
+  - Server-side permission + unit-scope checks on every endpoint.
+  - Uploaded files served only through an authenticated endpoint (no public
+    folder); validate file type/size.
+  - Audit log for create/update/delete/approve/print/export.
+  - Encrypted backups; keep member_db.sql (citizen personal data) out of the
+    project repo and out of production.
+
+
+--------------------------------------------------------------------------------
+13. OPEN QUESTIONS (need answers from the office)
+--------------------------------------------------------------------------------
+  1. Official list of ranks per class and their order, plus minimum years
+     between ranks (for promotion alerts).
+  2. The real unit tree (ស្ថាប័នកងឯកភាព → អង្គភាព → អង្គភាពរង →
+     អង្គភាពចំណុះផ្ទាល់) and the list of positions.
+  3. Format of អត្តលេខ (military ID) and of document/decision numbers.
+  4. Retirement age rules (by rank class / gender) and the meaning/criteria of
+     "យោធិនប្រភេទ២".
+  5. Exact layout of the A4 profile and decision letters (sample paper forms).
+  6. Required report templates (sample tables currently used).
+  7. Number of users, units, and soldiers expected; one office or many
+     units entering data?
+  8. Hosting: single intranet server? Is any internet access available?
+  9. Is any existing soldier data (Excel/paper) to be imported?
+
+
+--------------------------------------------------------------------------------
+14. IMPLEMENTATION NOTES (v1 built 2026-10-10)
+--------------------------------------------------------------------------------
+  Status: phases 0–7 are implemented (all menus and modules). Phase 8
+  (user acceptance testing, real data import, deployment) is still to do.
+  How to run: see README.md.
+
+  Differences from the original plan:
+  - Printing (A4 profile, decision annex, reports) uses print-styled pages in
+    the browser (Ctrl+P / Save as PDF) instead of server-side WeasyPrint.
+    Khmer text renders exactly as on screen and the server needs no extra
+    libraries. Excel export is still done on the server (openpyxl).
+  - Frontend is written in plain JavaScript, not TypeScript.
+  - The small lookup lists (status, education level, language, blood type,
+    marital status, occupation, award type, discipline type, separation
+    reason) share one `lookups` table with a `category` column.
+  - Rank/position/unit history is one table `soldier_histories`
+    (kind = initial / appoint / transfer / promote / correction).
+  - Editing rank/position/unit directly on the profile is allowed for data
+    clean-up, but it is recorded as a "correction" history row.
+  - Retirement and separation records change the soldier's status
+    automatically and create an "out" strength movement. Deleting the record
+    restores the previous status.
+  - The A4 profile and print layouts are a first draft. Replace them with the
+    office's official paper forms (open question 5).

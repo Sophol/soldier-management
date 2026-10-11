@@ -1,0 +1,28 @@
+{
+  "name": "soldier-management-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@fontsource/battambang": "^5.3.0",
+    "@fontsource/moul": "^5.3.0",
+    "axios": "^1.20.0",
+    "echarts": "^6.1.0",
+    "element-plus": "^2.14.7",
+    "pinia": "^4.0.3",
+    "vue": "^3.5.43",
+    "vue-echarts": "^8.3.2",
+    "vue-i18n": "^11.4.13",
+    "vue-router": "^5.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.9",
+    "vite": "^7.3.7"
+  }
+}

@@ -1,0 +1,54 @@
+:root {
+  --brand: #1f4e3d;
+  --brand-light: #2d6a54;
+  --gold: #c9a227;
+  --bg: #f3f5f7;
+  --text: #1d2733;
+  --muted: #6b7785;
+  --el-color-primary: #24614b;
+  --el-color-primary-light-3: #5b8f7c;
+  --el-color-primary-light-5: #8db3a4;
+  --el-color-primary-light-7: #bdd3ca;
+  --el-color-primary-light-8: #d3e2dc;
+  --el-color-primary-light-9: #e9f0ed;
+  --el-color-primary-dark-2: #1d4e3c;
+  --el-font-family: 'Battambang', 'Khmer OS Battambang', 'Noto Sans Khmer', system-ui, sans-serif;
+  --el-font-size-base: 15px;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; height: 100%; }
+body { font-family: var(--el-font-family); background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.7;
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+/* Khmer script has tall stacked vowels/subscripts: give text more vertical room */
+.el-table { font-size: 15px; }
+.el-table .cell { line-height: 1.8; }
+.el-table th.el-table__cell .cell { font-weight: 700; }
+.el-input__inner, .el-select__selected-item, .el-select__placeholder { line-height: 1.8; }
+.el-menu-item, .el-sub-menu__title { font-size: 15px; }
+.el-tag { font-size: 13px; }
+
+.moul { font-family: 'Moul', 'Khmer OS Muol Light', serif; font-weight: 400; }
+
+.page { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.page-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.page-head h2 { margin: 0; font-size: 22px; font-weight: 700; color: var(--brand); line-height: 1.6; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.filter-card .el-card__body { padding-bottom: 0; }
+.pager { margin-top: 14px; justify-content: flex-end; }
+.el-table th.el-table__cell { background: #f6f8f9; color: var(--text); font-weight: 600; }
+.el-form-item__label { font-weight: 700; line-height: 1.8; }
+.muted { color: var(--muted); }
+.section-title { font-weight: 700; color: var(--brand); margin: 18px 0 10px; border-left: 4px solid var(--gold); padding-left: 8px; }
+
+/* print helpers */
+.print-only { display: none; }
+@media print {
+  @page { size: A4; margin: 14mm 12mm; }
+  body { background: #fff; }
+  .no-print, .el-aside, .el-header, .app-header, .app-aside { display: none !important; }
+  .print-only { display: block; }
+  .el-main { padding: 0 !important; overflow: visible !important; }
+  .page { padding: 0; }
+  .el-card { border: none !important; box-shadow: none !important; }
+}
