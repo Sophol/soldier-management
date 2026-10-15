@@ -115,6 +115,10 @@ class RankIn(In):
     short_kh: str | None = None
     sort_order: int = 0
     min_years_to_next: int | None = Field(default=None, ge=0, le=50)
+    branch: Literal["army", "navy", "all"] = "army"
+    quota: int | None = Field(default=None, ge=0)
+    retirement_age: int | None = Field(default=None, ge=18, le=80)
+    salary: float | None = Field(default=None, ge=0)
     active: bool = True
 
 
@@ -126,7 +130,22 @@ class NamedIn(In):
 
 class PositionIn(NamedIn):
     grade: int | None = None
+    salary: float | None = Field(default=None, ge=0)
     sort_order: int = 0
+
+
+class SpecialtyIn(NamedIn):
+    category: Literal["military", "civil"] = "military"
+
+
+class UnitPositionIn(In):
+    unit_id: int
+    position_id: int
+    quota: int = Field(default=1, ge=0, le=10000)
+    min_rank_id: int | None = None
+    max_rank_id: int | None = None
+    salary: float | None = Field(default=None, ge=0)
+    notes: str | None = None
 
 
 class DocumentTypeIn(NamedIn):
@@ -239,13 +258,25 @@ class DecisionItemIn(In):
 
 class DecisionIn(In):
     kind: Literal["appoint", "transfer", "promote"]
-    decision_no: str
+    decision_no: str | None = None  # usually known only when signed: can be given at publishing
     decision_date: date
     effective_date: date
     issued_by: str | None = None
     outgoing_document_id: int | None = None
+    incoming_document_id: int | None = None
     notes: str | None = None
     items: list[DecisionItemIn] = Field(min_length=1)
+
+
+class WorkflowStepIn(In):
+    comment: str | None = None  # opinion; required when returning or rejecting
+
+
+class PublishIn(In):
+    decision_no: str | None = None  # the signed number (defaults to the outgoing letter number)
+    decision_date: date | None = None
+    outgoing_document_id: int | None = None  # an outgoing letter already registered; else one is created
+    comment: str | None = None
 
 
 # ---------- training & records ----------
@@ -259,6 +290,7 @@ class ParticipantIn(In):
 class TrainingCourseIn(In):
     name: str
     course_type: Literal["long", "short"]
+    level: Literal["basic", "refresher"] = "basic"
     specialty_id: int | None = None
     institution: str | None = None
     country_id: int | None = None
@@ -312,6 +344,68 @@ class StrengthIn(In):
     reason: str
     movement_date: date
     note: str | None = None
+
+
+# ---------- conscription (យុវជនបំពេញកាតព្វកិច្ចយោធា) ----------
+
+class ConscriptIn(In):
+    conscript_no: str = Field(min_length=1, max_length=50)
+    name_kh: str = Field(min_length=1)
+    name_latin: str | None = None
+    gender: Literal["M", "F"]
+    date_of_birth: date | None = None
+    birth_village_id: int | None = None
+    birth_place_text: str | None = None
+    nationality: str | None = "ខ្មែរ"
+    national_id: str | None = None
+    father_name: str | None = None
+    mother_name: str | None = None
+    current_village_id: int | None = None
+    current_address_text: str | None = None
+    phone: str | None = None
+    marital_status_id: int | None = None
+    spouse_name: str | None = None
+    children_count: int = Field(default=0, ge=0, le=50)
+    education_level_id: int | None = None
+    profession: str | None = None
+    languages: str | None = None
+    driving_license: str | None = None
+    notes: str | None = None
+
+
+class ConscriptRegistrationIn(In):
+    conscript_id: int
+    register_no: str | None = None
+    registration_year: int = Field(ge=1990, le=2100)
+    duty_year: int | None = Field(default=None, ge=1990, le=2100)
+    province_id: int | None = None
+    district_id: int | None = None
+    status: Literal["registered", "called", "served", "exempted", "deferred"] = "registered"
+    reason: Literal["study", "health", "family", "other"] | None = None
+    reason_note: str | None = None
+
+
+class ConscriptMedicalIn(In):
+    conscript_id: int
+    exam_date: date
+    height_cm: float | None = Field(default=None, gt=0, lt=300)
+    weight_kg: float | None = Field(default=None, gt=0, lt=500)
+    result: Literal["pass", "fail", "deferred"]
+    examiner: str | None = None
+    notes: str | None = None
+
+
+class ConscriptServiceIn(In):
+    conscript_id: int
+    start_date: date | None = None
+    end_date: date | None = None
+    unit_id: int | None = None
+    unit_text: str | None = None
+    rank_id: int | None = None
+    role: str | None = None
+    trainings: str | None = None
+    awards_discipline: str | None = None
+    order_no: str | None = None
 
 
 class SettingsIn(BaseModel):

@@ -30,6 +30,7 @@ from app.models import (
     TrainingCourse,
     TrainingParticipant,
     Unit,
+    UnitPosition,
     User,
     Village,
 )
@@ -39,6 +40,7 @@ from app.services.common import (
     audit,
     check_unit_in_scope,
     delete_storage_file,
+    names_by_id,
     paginate,
     save_upload,
     scope_unit_ids,
@@ -46,7 +48,7 @@ from app.services.common import (
     to_dict,
     unit_subtree_ids,
 )
-from app.services.soldier import add_history, add_movement, age, diff_ym, soldier_summary, ym_text
+from app.services.soldier import add_history, add_movement, age, diff_ym, is_inactive, soldier_summary, ym_text
 
 router = APIRouter(prefix="/soldiers", tags=["soldiers"])
 
@@ -161,8 +163,8 @@ def export_soldiers(f: dict = Depends(_filters), db: Session = Depends(get_db),
     ws = wb.active
     ws.title = "យោធិន"
     headers = ["ល.រ", "អត្តលេខ", "ឋានន្តរស័ក្តិ", "គោត្តនាមនិងនាម", "ឈ្មោះឡាតាំង", "ភេទ", "ថ្ងៃខែឆ្នាំកំណើត", "អាយុ",
-               "មុខតំណែង", "អង្គភាព", "ថ្ងៃចូលបម្រើទ័ព", "រយៈពេលបម្រើការងារ", "ថ្ងៃឡើងស័ក្តិ", "រយៈពេលឡើងស័ក្តិ",
-               "ស្ថានភាព", "ទូរសព្ទ"]
+               "មុខតំណែង", "ថ្ងៃខែឆ្នាំមុខតំណែង", "រយៈពេលមុខតំណែង", "អង្គភាព", "ចំណុះស្ថាប័នកងឯកភាព",
+               "ថ្ងៃចូលបម្រើទ័ព", "រយៈពេលបម្រើការងារ", "ថ្ងៃឡើងស័ក្តិ", "រយៈពេលឡើងស័ក្តិ", "ស្ថានភាព", "ទូរសព្ទ"]
     ws.append(headers)
     for c in ws[1]:
         c.font = Font(bold=True)
@@ -170,8 +172,8 @@ def export_soldiers(f: dict = Depends(_filters), db: Session = Depends(get_db),
         d = soldier_summary(s)
         ws.append([i, d["military_id"], d["rank_name"], d["name_kh"], d["name_latin"],
                    "ប្រុស" if d["gender"] == "M" else "ស្រី", d["date_of_birth"], d["age"], d["position_name"],
-                   d["unit_name"], d["enlistment_date"], d["service_length"], d["rank_date"], d["time_in_rank"],
-                   d["status_name"], d["phone"]])
+                   d["position_date"], d["time_in_position"], d["unit_path"], d["institution_name"],
+                   d["enlistment_date"], d["service_length"], d["rank_date"], d["time_in_rank"], d["status_name"], d["phone"]])
     for col in ws.columns:
         ws.column_dimensions[col[0].column_letter].width = 18
     buf = BytesIO()
@@ -237,6 +239,7 @@ def update_soldier(soldier_id: int, payload: SoldierIn, request: Request, db: Se
         check_unit_in_scope(db, user, payload.current_unit_id)
     before = to_dict(s)
     old = (s.current_rank_id, s.current_position_id, s.current_unit_id)
+    old_unit_date = s.unit_transfer_date
     _apply(s, payload)
     s.updated_by = user.id
     new = (s.current_rank_id, s.current_position_id, s.current_unit_id)
@@ -246,6 +249,15 @@ def update_soldier(soldier_id: int, payload: SoldierIn, request: Request, db: Se
             add_history(db, s, "correction", date.today(), old_rank=old[0], new_rank=new[0],
                         old_position=old[1], new_position=new[1], old_unit=old[2], new_unit=new[2],
                         note="កែតម្រូវដោយផ្ទាល់ពីប្រវត្តិរូប")
+        if old[2] != new[2] and not is_inactive(db, s):
+            # a unit change from the profile moves the soldier between unit strengths, like a transfer decision
+            moved = s.unit_transfer_date if s.unit_transfer_date != old_unit_date else None
+            moved = moved or date.today()
+            if old[2]:
+                add_movement(db, s.id, old[2], "out", "transfer_out", moved, "soldiers", s.id, note="កែប្រែពីប្រវត្តិរូប")
+            if new[2]:
+                add_movement(db, s.id, new[2], "in", "transfer_in" if old[2] else "recruit", moved, "soldiers", s.id,
+                             note="កែប្រែពីប្រវត្តិរូប")
         db.flush()
         audit(db, user, "update", s, before=before, request=request)
         db.commit()
@@ -338,19 +350,12 @@ def delete_attachment(soldier_id: int, att_id: int, request: Request, db: Sessio
 
 # ---------------- history & full profile ----------------
 
-def _names(db: Session, model, ids: set) -> dict:
-    ids = {i for i in ids if i}
-    if not ids:
-        return {}
-    return {o.id: o.name_kh for o in db.scalars(select(model).where(model.id.in_(ids)))}
-
-
 def history_rows(db: Session, soldier_id: int) -> list[dict]:
     rows = db.scalars(select(SoldierHistory).where(SoldierHistory.soldier_id == soldier_id)
                       .order_by(SoldierHistory.effective_date.desc(), SoldierHistory.id.desc())).all()
-    ranks = _names(db, Rank, {r.old_rank_id for r in rows} | {r.new_rank_id for r in rows})
-    poss = _names(db, Position, {r.old_position_id for r in rows} | {r.new_position_id for r in rows})
-    units = _names(db, Unit, {r.old_unit_id for r in rows} | {r.new_unit_id for r in rows})
+    ranks = names_by_id(db, Rank, {r.old_rank_id for r in rows} | {r.new_rank_id for r in rows})
+    poss = names_by_id(db, Position, {r.old_position_id for r in rows} | {r.new_position_id for r in rows})
+    units = names_by_id(db, Unit, {r.old_unit_id for r in rows} | {r.new_unit_id for r in rows})
     return [{
         **to_dict(r),
         "old_rank": ranks.get(r.old_rank_id), "new_rank": ranks.get(r.new_rank_id),
@@ -370,7 +375,7 @@ def soldier_profile(soldier_id: int, db: Session = Depends(get_db), user: User =
     """Everything needed for the profile page and the A4 print (names resolved)."""
     s = get_soldier(db, user, soldier_id)
     d = soldier_detail(s)
-    lk = _names(db, Lookup, {s.blood_type_id, s.education_level_id, s.marital_status_id, s.spouse_job_id}
+    lk = names_by_id(db, Lookup, {s.blood_type_id, s.education_level_id, s.marital_status_id, s.spouse_job_id}
                 | {e.education_level_id for e in s.educations} | {lg.language_id for lg in s.languages})
     d.update({
         "blood_type_name": lk.get(s.blood_type_id),
@@ -406,4 +411,11 @@ def soldier_profile(soldier_id: int, db: Session = Depends(get_db), user: User =
     d["trainings"] = [{**to_dict(c), "result": p.result, "certificate_no": p.certificate_no} for c, p in trainings]
     d["service_length"] = ym_text(diff_ym(s.enlistment_date))
     d["specialty_name"] = db.get(Specialty, s.specialty_id).name_kh if s.specialty_id else None
+    # salaries: the rank's, and the position's (the unit's staffing table may override the position allowance)
+    up = db.scalar(select(UnitPosition).where(UnitPosition.unit_id == s.current_unit_id,
+                                              UnitPosition.position_id == s.current_position_id)) \
+        if s.current_unit_id and s.current_position_id else None
+    pos_salary = up.salary if up and up.salary is not None else (s.position.salary if s.position else None)
+    d["rank_salary"] = float(s.rank.salary) if s.rank and s.rank.salary is not None else None
+    d["position_salary"] = float(pos_salary) if pos_salary is not None else None
     return d

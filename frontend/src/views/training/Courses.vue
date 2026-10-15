@@ -3,11 +3,17 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import CrudPage from '@/components/CrudPage.vue'
 import SoldierSelect from '@/components/SoldierSelect.vue'
+import { useLookups } from '@/stores/lookups'
 import { fmtDate } from '@/utils/format'
 
 const route = useRoute()
 const type = computed(() => route.params.type)
 const viewing = ref(null)
+const lookups = useLookups()
+const LEVEL = { basic: 'វគ្គបណ្ដុះបណ្ដាល', refresher: 'វគ្គបំប៉ន' }
+const levelOptions = Object.entries(LEVEL).map(([value, label]) => ({ value, label }))
+const cambodiaId = () => lookups.list('countries').find((c) => c.name_en === 'Cambodia')?.id
+const abroad = (r) => !!r.country_id && r.country_id !== cambodiaId()
 
 const config = computed(() => ({
   title: type.value === 'long' ? 'វគ្គបណ្ដុះបណ្ដាលរយៈពេលវែង' : 'វគ្គបណ្ដុះបណ្ដាលរយៈពេលខ្លី',
@@ -16,15 +22,19 @@ const config = computed(() => ({
   columns: [
     { key: 'name', label: 'ឈ្មោះវគ្គ', minWidth: 220 },
     { key: 'institution', label: 'គ្រឹះស្ថាន', minWidth: 160 },
+    { key: 'level', label: 'ប្រភេទវគ្គ', width: 120, value: (r) => LEVEL[r.level] },
     { key: 'country', label: 'ប្រទេស', width: 120, value: (r, lk) => lk.list('countries').find((c) => c.id === r.country_id)?.name_kh },
+    { key: 'where', label: 'ក្នុង/ក្រៅប្រទេស', width: 130, value: (r, lk) => (abroad(r, lk) ? 'ក្រៅប្រទេស' : 'ក្នុងប្រទេស'), tag: (r) => (abroad(r, lookups) ? 'warning' : 'info') },
     { key: 'start_date', label: 'ចាប់ពី', type: 'date', width: 110 },
     { key: 'end_date', label: 'ដល់', type: 'date', width: 110 },
     { key: 'participant_count', label: 'ចំនួនសិក្ខាកាម', width: 120 },
   ],
-  filters: [{ key: 'specialty_id', label: 'ជំនាញ', type: 'select', options: 'specialties' },
+  filters: [{ key: 'level', label: 'ប្រភេទវគ្គ', type: 'select', width: '150px', options: levelOptions },
+    { key: 'specialty_id', label: 'ជំនាញ', type: 'select', options: 'specialties' },
     { key: 'date_from', label: 'ចាប់ពី', type: 'date', width: '150px' }, { key: 'date_to', label: 'ដល់', type: 'date', width: '150px' }],
   fields: [
-    { key: 'name', label: 'ឈ្មោះវគ្គ', required: true },
+    { key: 'name', label: 'ឈ្មោះវគ្គ', required: true, span: 16 },
+    { key: 'level', label: 'ប្រភេទវគ្គ', type: 'select', required: true, default: 'basic', options: levelOptions, span: 8 },
     { key: 'specialty_id', label: 'ជំនាញឯកទេស', type: 'select', options: 'specialties', span: 8 },
     { key: 'institution', label: 'គ្រឹះស្ថានបណ្ដុះបណ្ដាល', span: 8 },
     { key: 'country_id', label: 'ប្រទេស', type: 'select', options: 'countries', span: 8 },

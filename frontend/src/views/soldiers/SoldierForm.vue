@@ -38,7 +38,10 @@ const rules = {
   gender: [{ required: true, message: 'សូមជ្រើសរើសភេទ' }],
 }
 
-const married = computed(() => lookups.list('marital_status').find((m) => m.id === form.value.marital_status_id)?.code !== 'single')
+const married = computed(() => {
+  const status = lookups.list('marital_status').find((m) => m.id === form.value.marital_status_id)
+  return !!status && status.code !== 'single'
+})
 
 onMounted(async () => {
   if (!id.value) return
@@ -73,15 +76,24 @@ async function save() {
   }
   saving.value = true
   try {
+    // rows left empty would fail validation on the server
+    const payload = {
+      ...form.value,
+      languages: form.value.languages.filter((l) => l.language_id),
+      children: form.value.children.filter((c) => c.name?.trim()),
+    }
     const { data } = id.value
-      ? await http.put(`/soldiers/${id.value}`, form.value)
-      : await http.post('/soldiers', form.value)
+      ? await http.put(`/soldiers/${id.value}`, payload)
+      : await http.post('/soldiers', payload)
+    let photoFailed = false
     if (photoFile.value) {
       const fd = new FormData()
       fd.append('file', photoFile.value)
-      await http.post(`/soldiers/${data.id}/photo`, fd)
+      // the soldier is saved already: a failed photo must not keep the user on the "new" form (saving again = duplicate)
+      try { await http.post(`/soldiers/${data.id}/photo`, fd) } catch { photoFailed = true }
     }
-    ElMessage.success('បានរក្សាទុកដោយជោគជ័យ')
+    if (photoFailed) ElMessage.warning('បានរក្សាទុកព័ត៌មាន ប៉ុន្តែរូបថតមិនអាចផ្ទុកបាន')
+    else ElMessage.success('បានរក្សាទុកដោយជោគជ័យ')
     router.push(`/soldiers/${data.id}`)
   } finally {
     saving.value = false
@@ -146,7 +158,7 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
           <!-- សេវាកម្ម -->
           <el-tab-pane label="ការងារ និងឋានន្តរស័ក្តិ" name="service">
             <el-alert v-if="id" type="info" show-icon :closable="false" style="margin-bottom: 14px"
-                      title="ការផ្លាស់ប្ដូរឋានន្តរស័ក្តិ មុខតំណែង ឬអង្គភាព គួរធ្វើតាមរយៈម៉ឺនុយ 'តែងតាំង ផ្លាស់ប្ដូរ និងដំឡើងស័ក្តិ'។ ការកែនៅទីនេះ នឹងកត់ត្រាជា 'ការកែតម្រូវ'។" />
+                      title="ការផ្លាស់ប្ដូរឋានន្តរស័ក្តិ មុខតំណែង ឬអង្គភាព គួរធ្វើតាមរយៈម៉ឺនុយ 'តែងតាំង ផ្លាស់ប្ដូរ និងដំឡើងស័ក្តិ'។ ការកែនៅទីនេះ នឹងកត់ត្រាជា 'ការកែតម្រូវ' ហើយការប្ដូរអង្គភាព នឹងរាប់បញ្ចូលក្នុងការងារកើនថយ (ផ្លាស់ចេញ/ផ្លាស់ចូល)។" />
             <el-row :gutter="14">
               <el-col :md="8"><el-form-item label="ឋានន្តរស័ក្តិ">
                 <el-select v-model="form.current_rank_id" clearable filterable>

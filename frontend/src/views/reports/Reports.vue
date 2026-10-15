@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import http, { download } from '@/api/http'
 import { useAuth } from '@/stores/auth'
 import UnitTreeSelect from '@/components/UnitTreeSelect.vue'
-import { fmtDate, num } from '@/utils/format'
+import { fmtDate, num, todayISO } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,11 +14,13 @@ const report = ref(null)
 const loading = ref(false)
 const year = new Date().getFullYear()
 const f = reactive({
-  key: route.query.key || 'strength_by_unit', date_from: `${year}-01-01`, date_to: new Date().toISOString().slice(0, 10),
-  unit_id: null, kind: null,
+  key: route.query.key || 'strength_by_unit', date_from: `${year}-01-01`, date_to: todayISO(),
+  unit_id: null, kind: null, fields: [],
 })
+// soldier list: the fields to show (ជ្រើសរើសព័ត៌មាន); the server sends the full catalog with the report
+const fieldCatalog = ref([])
 
-const usesDates = computed(() => ['movements', 'decisions', 'training', 'discipline', 'awards', 'retirement', 'separation'].includes(f.key))
+const usesDates = computed(() => ['movements', 'decisions', 'training', 'discipline', 'awards', 'retirement', 'separation', 'conscripts'].includes(f.key))
 const kindOptions = computed(() => ({
   decisions: [{ value: 'appoint', label: 'តែងតាំង' }, { value: 'transfer', label: 'ផ្លាស់ប្ដូរ' }, { value: 'promote', label: 'ដំឡើងស័ក្តិ' }],
   training: [{ value: 'long', label: 'រយៈពេលវែង' }, { value: 'short', label: 'រយៈពេលខ្លី' }],
@@ -26,6 +28,7 @@ const kindOptions = computed(() => ({
 
 function params() {
   const p = { unit_id: f.unit_id || undefined, kind: f.kind || undefined }
+  if (f.key === 'soldier_list' && f.fields.length) p.fields = f.fields.join(',')
   if (usesDates.value) Object.assign(p, { date_from: f.date_from, date_to: f.date_to })
   return p
 }
@@ -34,6 +37,10 @@ async function run() {
   loading.value = true
   try {
     report.value = (await http.get(`/reports/${f.key}`, { params: params() })).data
+    if (report.value.available_fields) {
+      fieldCatalog.value = report.value.available_fields
+      if (!f.fields.length) f.fields = report.value.columns.map((c) => c.key).filter((k) => k !== 'no')
+    }
   } finally {
     loading.value = false
   }
@@ -75,6 +82,11 @@ onMounted(async () => {
         <el-form-item v-if="kindOptions" label="ប្រភេទ">
           <el-select v-model="f.kind" clearable style="width: 150px">
             <el-option v-for="o in kindOptions" :key="o.value" v-bind="o" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="f.key === 'soldier_list' && fieldCatalog.length" label="ព័ត៌មានដែលបង្ហាញ">
+          <el-select v-model="f.fields" multiple collapse-tags collapse-tags-tooltip filterable style="width: 320px">
+            <el-option v-for="c in fieldCatalog" :key="c.key" :value="c.key" :label="c.label" />
           </el-select>
         </el-form-item>
         <template v-if="usesDates">

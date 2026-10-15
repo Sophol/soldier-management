@@ -1,4 +1,5 @@
-"""Seed permissions, roles, the first admin user and starter lookup data.
+"""Seed permissions, roles, the first admin user and starter reference data
+(ranks, positions, specialties, lookups, document types, settings).
 
 Usage:  python -m scripts.seed [--admin-password ...]
 Safe to run more than once: existing rows are left untouched.
@@ -13,26 +14,89 @@ from sqlalchemy import select
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.database import SessionLocal  # noqa: E402
-from app.core.permissions import ACTIONS, MODULES, SYSTEM_MODULES  # noqa: E402
+from app.core.permissions import MODULES, SYSTEM_MODULES, module_actions  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
-from app.models import DocumentType, Lookup, Permission, Rank, RankClass, Role, Setting, User  # noqa: E402
+from app.models import (  # noqa: E402
+    DocumentType,
+    Lookup,
+    Permission,
+    Position,
+    Rank,
+    RankClass,
+    Role,
+    Setting,
+    Specialty,
+    User,
+)
 from scripts.sql_dump import iter_rows  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # DRAFT rank list – confirm the official names/order with the office (plan.txt §13 Q1).
+# (name_kh, name_en, minimum years in rank before the next promotion)
 RANKS = {
     ("នាយទាហាន", "Officers"): [
-        "មហាសេនីយ៍", "ឧត្តមសេនីយ៍ឯក", "ឧត្តមសេនីយ៍ទោ", "ឧត្តមសេនីយ៍ត្រី",
-        "វរសេនីយ៍ឯក", "វរសេនីយ៍ទោ", "វរសេនីយ៍ត្រី",
-        "អនុសេនីយ៍ឯក", "អនុសេនីយ៍ទោ", "អនុសេនីយ៍ត្រី",
+        ("មហាសេនីយ៍", "Senior General", None),
+        ("ឧត្តមសេនីយ៍ឯក", "General", None),
+        ("ឧត្តមសេនីយ៍ទោ", "Lieutenant General", 4),
+        ("ឧត្តមសេនីយ៍ត្រី", "Major General", 4),
+        ("វរសេនីយ៍ឯក", "Colonel", 4),
+        ("វរសេនីយ៍ទោ", "Lieutenant Colonel", 4),
+        ("វរសេនីយ៍ត្រី", "Major", 4),
+        ("អនុសេនីយ៍ឯក", "Captain", 3),
+        ("អនុសេនីយ៍ទោ", "Lieutenant", 3),
+        ("អនុសេនីយ៍ត្រី", "Second Lieutenant", 2),
     ],
     ("នាយទាហានរង", "Non-commissioned officers"): [
-        "ព្រឹន្ទបាលឯក", "ព្រឹន្ទបាលទោ", "ព្រឹន្ទបាលត្រី",
-        "ពលបាលឯក", "ពលបាលទោ", "ពលបាលត្រី",
+        ("ព្រឹន្ទបាលឯក", "Chief Warrant Officer", 2),
+        ("ព្រឹន្ទបាលទោ", "Warrant Officer", 2),
+        ("ព្រឹន្ទបាលត្រី", "Junior Warrant Officer", 2),
+        ("ពលបាលឯក", "Sergeant First Class", 2),
+        ("ពលបាលទោ", "Sergeant", 2),
+        ("ពលបាលត្រី", "Corporal", 2),
     ],
-    ("ពលទាហាន", "Enlisted"): ["ពលទាហានឯក", "ពលទាហានទោ"],
+    ("ពលទាហាន", "Enlisted"): [
+        ("ពលទាហានឯក", "Private First Class", 1),
+        ("ពលទាហានទោ", "Private", 1),
+    ],
 }
+
+# DRAFT positions – replace with the office's official list. (name_kh, name_en, grade: 1 = highest)
+POSITIONS = [
+    ("អគ្គនាយក", "Director General", 1),
+    ("អគ្គនាយករង", "Deputy Director General", 2),
+    ("មេបញ្ជាការ", "Commander", 2),
+    ("មេបញ្ជាការរង", "Deputy Commander", 3),
+    ("នាយសេនាធិការ", "Chief of Staff", 3),
+    ("ប្រធាននាយកដ្ឋាន", "Director of Department", 3),
+    ("អនុប្រធាននាយកដ្ឋាន", "Deputy Director of Department", 4),
+    ("ប្រធានការិយាល័យ", "Chief of Office", 5),
+    ("អនុប្រធានការិយាល័យ", "Deputy Chief of Office", 6),
+    ("មេវរសេនាតូច", "Battalion Commander", 5),
+    ("មេវរសេនាតូចរង", "Deputy Battalion Commander", 6),
+    ("មេសេនាធំ", "Company Commander", 7),
+    ("មេសេនាតូច", "Platoon Leader", 8),
+    ("មន្ត្រីជំនាញ", "Specialist Officer", 8),
+    ("មន្ត្រីរដ្ឋបាល", "Administrative Officer", 9),
+    ("មេក្រុម", "Squad Leader", 9),
+    ("ពលទាហាន", "Soldier", 10),
+]
+
+# DRAFT specialties – replace with the office's official list. (name_kh, name_en, military យោធា / civil ស៊ីវិល)
+SPECIALTIES = [
+    ("រដ្ឋបាល និងបុគ្គលិក", "Administration and personnel", "civil"),
+    ("ហិរញ្ញវត្ថុ", "Finance", "civil"),
+    ("ច្បាប់", "Law", "civil"),
+    ("ព័ត៌មានវិទ្យា", "Information technology", "civil"),
+    ("ទូរគមនាគមន៍", "Telecommunications", "military"),
+    ("ភស្តុភារ", "Logistics", "military"),
+    ("វេជ្ជសាស្ត្រ", "Medicine", "civil"),
+    ("វិស្វកម្ម", "Engineering", "civil"),
+    ("ថ្មើរជើង", "Infantry", "military"),
+    ("ការពារ និងអន្តរាគមន៍", "Protection and intervention", "military"),
+    ("បើកបរ និងជួសជុលយានយន្ត", "Driving and vehicle maintenance", "military"),
+    ("ចារកម្ម និងស៊ើបការណ៍", "Intelligence", "military"),
+]
 
 LOOKUPS = {
     "soldier_status": [
@@ -83,20 +147,43 @@ SETTINGS = [
     ("retirement_age_male", "60", "Retirement age – male (confirm with office)"),
     ("retirement_age_female", "55", "Retirement age – female (confirm with office)"),
     ("alert_months_ahead", "6", "Months ahead for retirement alerts"),
+    ("workflow_overdue_days", "3", "Days a decision may wait at one approval step before it is flagged"),
 ]
 
 
+# one role per approval level of the decision workflow (answer.txt): (role, description, workflow permission)
+WORKFLOW_ROLES = [
+    ("Specialist", "មន្ត្រីជំនាញ — ពិនិត្យលក្ខខណ្ឌ", "wf_review"),
+    ("Deputy Chief of Office", "នាយរងការិយាល័យ", "wf_deputy_office"),
+    ("Chief of Office", "ប្រធានការិយាល័យ", "wf_chief_office"),
+    ("Deputy Director", "នាយរងនាយកដ្ឋាន", "wf_deputy_department"),
+    ("Director", "នាយកដ្ឋាន (នាយក)", "wf_director"),
+    ("Leadership", "ថ្នាក់ដឹកនាំកំពូល", "wf_leadership"),
+]
+
+
+def _keys(modules, actions) -> set[tuple[str, str]]:
+    return {(m, a) for m in modules for a in actions if a in module_actions(m)}
+
+
 def role_permission_keys(role: str) -> set[tuple[str, str]]:
-    business = [m for m in MODULES if m not in SYSTEM_MODULES]
+    # health data of conscripts is only for roles given it explicitly (answer.txt)
+    business = [m for m in MODULES if m not in SYSTEM_MODULES and not m.startswith("wf_") and m != "conscript_medical"]
+    decisions = ["decisions_appoint", "decisions_transfer", "decisions_promote"]
     if role == "Admin":
-        return {(m, a) for m in MODULES if m not in {"roles", "settings"} for a in ACTIONS}
-    if role == "Officer":
-        return {(m, a) for m in business for a in ["view", "create", "update", "search", "print", "export"]}
-    if role == "Approver":
-        keys = {(m, a) for m in business for a in ["view", "search", "print", "export"]}
-        return keys | {(m, "approve") for m in ["decisions_appoint", "decisions_transfer", "decisions_promote"]}
+        # approval steps belong only to the role of that level (and Super Admin): not to the system admin
+        return {(m, a) for m in MODULES if m not in {"roles", "settings"} and not m.startswith("wf_")
+                for a in module_actions(m)}
+    if role == "Officer":  # registers requests (step 1) and publishes signed decisions (step 8)
+        return _keys(business, ["view", "create", "update", "search", "print", "export"]) | {("wf_publish", "approve")}
+    if role == "Approver":  # may also revert a published decision
+        return _keys(business, ["view", "search", "print", "export"]) | {(m, "approve") for m in decisions}
     if role == "Viewer":
-        return {(m, a) for m in business for a in ["view", "search", "print"]}
+        return _keys(business, ["view", "search", "print"])
+    for name, _, wf in WORKFLOW_ROLES:
+        if role == name:
+            base = role_permission_keys("Officer" if wf == "wf_review" else "Viewer") - {("wf_publish", "approve")}
+            return base | {(wf, "approve")}
     return set()
 
 
@@ -104,10 +191,9 @@ def main(admin_password: str, source_dir: Path = PROJECT_ROOT) -> None:
     db = SessionLocal()
     try:
         existing = {(p.module_key, p.action) for p in db.scalars(select(Permission))}
-        for m in MODULES:
-            for a in ACTIONS:
-                if (m, a) not in existing:
-                    db.add(Permission(module_key=m, action=a))
+        added = {(m, a) for m in MODULES for a in module_actions(m)} - existing
+        for m, a in sorted(added):
+            db.add(Permission(module_key=m, action=a))
         db.flush()
         perms = {(p.module_key, p.action): p for p in db.scalars(select(Permission))}
 
@@ -117,12 +203,20 @@ def main(admin_password: str, source_dir: Path = PROJECT_ROOT) -> None:
             ("Officer", "មន្ត្រីបញ្ចូលទិន្នន័យ", False),
             ("Approver", "អ្នកអនុម័តសេចក្ដីសម្រេច", False),
             ("Viewer", "អ្នកមើលប៉ុណ្ណោះ", False),
+            *((name, desc, False) for name, desc, _ in WORKFLOW_ROLES),
         ]
         for name, desc, is_super in roles_def:
-            if not db.scalar(select(Role).where(Role.name == name)):
+            role = db.scalar(select(Role).where(Role.name == name))
+            if not role:
                 role = Role(name=name, description=desc, is_super=is_super)
                 role.permissions = [perms[k] for k in sorted(role_permission_keys(name))]
                 db.add(role)
+            elif added:
+                # permissions that did not exist before this run (new modules): give them to the roles that
+                # would have them on a fresh install; permissions an admin removed earlier stay removed
+                have = {p.key for p in role.permissions}
+                role.permissions += [perms[k] for k in sorted(role_permission_keys(name) & added)
+                                     if f"{k[0]}.{k[1]}" not in have]
         db.flush()
 
         if not db.scalar(select(User).where(User.username == "admin")):
@@ -137,9 +231,31 @@ def main(admin_password: str, source_dir: Path = PROJECT_ROOT) -> None:
                 rc = RankClass(name_kh=cls_kh, name_en=cls_en, sort_order=ci)
                 db.add(rc)
                 db.flush()
-                for n in names:
-                    db.add(Rank(rank_class_id=rc.id, name_kh=n, sort_order=order))
+                for kh, en, years in names:
+                    db.add(Rank(rank_class_id=rc.id, name_kh=kh, name_en=en, min_years_to_next=years, sort_order=order))
                     order -= 1
+        else:
+            # fill English names / minimum years on ranks seeded before these were added (never overwrite edits)
+            draft = {kh: (en, years) for names in RANKS.values() for kh, en, years in names}
+            for r in db.scalars(select(Rank)):
+                en, years = draft.get(r.name_kh, (None, None))
+                r.name_en = r.name_en or en
+                if r.min_years_to_next is None:
+                    r.min_years_to_next = years
+
+        if not db.scalar(select(Position.id).limit(1)):
+            for i, (kh, en, grade) in enumerate(POSITIONS, start=1):
+                db.add(Position(name_kh=kh, name_en=en, grade=grade, sort_order=i))
+
+        if not db.scalar(select(Specialty.id).limit(1)):
+            for kh, en, category in SPECIALTIES:
+                db.add(Specialty(name_kh=kh, name_en=en, category=category))
+        else:
+            # the category column was added later (default 'military'): mark the draft civil specialties once
+            civil = {kh for kh, _, category in SPECIALTIES if category == "civil"}
+            for sp in db.scalars(select(Specialty).where(Specialty.name_kh.in_(civil), Specialty.category == "military",
+                                                         Specialty.updated_at == Specialty.created_at)):
+                sp.category = "civil"
 
         for cat, items in LOOKUPS.items():
             if db.scalar(select(Lookup.id).where(Lookup.category == cat).limit(1)):

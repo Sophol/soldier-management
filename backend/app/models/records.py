@@ -13,6 +13,7 @@ class TrainingCourse(AuditMixin, SoftDeleteMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     course_type: Mapped[str] = mapped_column(String(20), index=True)  # long / short
+    level: Mapped[str] = mapped_column(String(20), default="basic")  # basic បណ្ដុះបណ្ដាល / refresher បំប៉ន
     specialty_id: Mapped[int | None] = mapped_column(ForeignKey("specialties.id"))
     institution: Mapped[str | None] = mapped_column(String(255))
     country_id: Mapped[int | None] = mapped_column(ForeignKey("countries.id"))

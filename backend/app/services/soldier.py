@@ -30,14 +30,21 @@ def age(dob: date | None) -> int | None:
     return ym[0] if ym else None
 
 
+def unit_chain(unit) -> list:
+    """[institution, ..., unit]: the unit and all of its parents, top first."""
+    chain = []
+    while unit is not None:
+        chain.append(unit)
+        unit = unit.parent
+    return chain[::-1]
+
+
 def soldier_summary(s: Soldier) -> dict:
     """Fields shown in lists (with computed values)."""
     service = diff_ym(s.enlistment_date)
     in_rank = diff_ym(s.rank_date)
-    root_unit = None
-    if s.unit is not None:
-        parts = [p for p in s.unit.path.split("/") if p]
-        root_unit = int(parts[0]) if parts else None
+    in_position = diff_ym(s.position_date)
+    chain = unit_chain(s.unit)
     return {
         "id": s.id,
         "military_id": s.military_id,
@@ -55,7 +62,9 @@ def soldier_summary(s: Soldier) -> dict:
         "position_name": s.position.name_kh if s.position else None,
         "unit_id": s.current_unit_id,
         "unit_name": s.unit.name_kh if s.unit else None,
-        "institution_id": root_unit,
+        "institution_id": chain[0].id if chain else None,
+        "institution_name": chain[0].name_kh if chain else None,
+        "unit_path": " › ".join(u.name_kh for u in chain) or None,
         "status_id": s.status_id,
         "status_name": s.status.name_kh if s.status else None,
         "status_code": s.status.code if s.status else None,
@@ -65,12 +74,24 @@ def soldier_summary(s: Soldier) -> dict:
         "rank_date": s.rank_date.isoformat() if s.rank_date else None,
         "time_in_rank": ym_text(in_rank),
         "time_in_rank_years": in_rank[0] if in_rank else None,
+        "position_date": s.position_date.isoformat() if s.position_date else None,
+        "time_in_position": ym_text(in_position),
         "specialty_name": s.specialty.name_kh if s.specialty else None,
     }
 
 
 def status_id_by_code(db: Session, code: str) -> int | None:
     return db.scalar(select(Lookup.id).where(Lookup.category == "soldier_status", Lookup.code == code))
+
+
+# statuses of soldiers who have left the strength (retirement, category 2, separation)
+INACTIVE_STATUS_CODES = ("retired", "category2", "separated")
+
+
+def is_inactive(db: Session, s: Soldier) -> bool:
+    """True when the soldier has left the strength (read by id: the cached relationship may be stale)."""
+    code = db.scalar(select(Lookup.code).where(Lookup.id == s.status_id)) if s.status_id else None
+    return code in INACTIVE_STATUS_CODES
 
 
 def add_history(db: Session, soldier: Soldier, kind: str, effective_date: date | None, *,

@@ -14,7 +14,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env            # set DATABASE_URL and a random SECRET_KEY
 .venv/bin/alembic upgrade head  # create tables
 .venv/bin/python -m scripts.import_geo   # 25 provinces / 205 districts / 1683 communes / 14760 villages + countries
-.venv/bin/python -m scripts.seed         # roles, permissions, admin user, ranks, lookup lists
+.venv/bin/python -m scripts.seed         # roles, permissions, admin user, ranks, positions, specialties, lookup lists
+.venv/bin/python -m scripts.seed_demo    # optional: fictional demo data (units, ~175 soldiers, decisions, documents...)
 .venv/bin/uvicorn app.main:app --reload --port 8000
 
 # 2. Frontend (new terminal)
@@ -24,6 +25,10 @@ npm run dev                     # http://localhost:5173  (proxies /api to :8000)
 ```
 
 Default login: `admin` / `Admin@123`. Change it right away under **ប្ដូរពាក្យសម្ងាត់**.
+With the demo data loaded there are also `officer`, `approver`, `viewer` and `guard.officer` (scoped to បញ្ជាការដ្ឋានកងការពារ), all with password `Demo@123`.
+For the decision approval workflow there is one demo user per level: `specialist` (មន្ត្រីជំនាញ), `deputy.office`,
+`chief.office`, `deputy.director`, `director` and `leader`; `officer` registers requests and publishes signed decisions.
+The demo seed only runs on a system with no units or soldiers; never load it into production.
 API docs: http://localhost:8000/api/docs
 
 ## Tests

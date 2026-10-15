@@ -172,8 +172,12 @@ onMounted(async () => {
         </el-table-column>
         <el-table-column label="ភេទ" width="70"><template #default="{ row }">{{ genderText(row.gender) }}</template></el-table-column>
         <el-table-column prop="age" label="អាយុ" width="80" sortable="custom"><template #default="{ row }">{{ num(row.age) }}</template></el-table-column>
-        <el-table-column prop="position_name" label="មុខតំណែង" min-width="130" show-overflow-tooltip />
-        <el-table-column prop="unit_name" label="អង្គភាព" min-width="150" show-overflow-tooltip />
+        <el-table-column label="មុខតំណែង" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.position_name }}<div v-if="row.time_in_position" class="muted small">{{ num(row.time_in_position) }}</div></template>
+        </el-table-column>
+        <el-table-column label="ស្ថាប័នកងឯកភាព-អង្គភាព" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.unit_path }}</template>
+        </el-table-column>
         <el-table-column prop="enlistment_date" label="ចូលបម្រើទ័ព" width="125" sortable="custom">
           <template #default="{ row }">{{ fmtDate(row.enlistment_date) }}<div class="muted small">{{ num(row.service_length) }}</div></template>
         </el-table-column>

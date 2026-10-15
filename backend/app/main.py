@@ -2,7 +2,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api.v1 import decisions, documents, master, records, reports, soldiers, system
+from app.api.v1 import conscripts, decisions, documents, master, records, reports, soldiers, system
 from app.core.config import settings
 from app.core.database import engine
 
@@ -18,7 +18,7 @@ app.add_middleware(
 )
 
 api = APIRouter(prefix="/api/v1")
-for module in (system, master, soldiers, documents, decisions, records, reports):
+for module in (system, master, soldiers, documents, decisions, records, conscripts, reports):
     api.include_router(module.router)
 app.include_router(api)
 

@@ -4,13 +4,13 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
 import AuthImage from '@/components/AuthImage.vue'
-import { fmtDateLong, genderText, khDigits } from '@/utils/format'
+import { fmtDateLong, genderText, khDigits, todayISO } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
 const s = ref(null)
 const org = ref('')
-const today = new Date().toISOString().slice(0, 10)
+const today = todayISO()
 const print = () => window.print()
 
 onMounted(async () => {

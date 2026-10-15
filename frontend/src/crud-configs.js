@@ -17,6 +17,8 @@ const soldierCols = [
   { key: 'unit_name', label: 'អង្គភាព', minWidth: 150 },
 ]
 const soldierField = { key: 'soldier_id', label: 'យោធិន', type: 'soldier', required: true }
+const SPECIALTY_CATEGORY = { military: 'ជំនាញយោធា', civil: 'ជំនាញស៊ីវិល' }
+const specialtyCategoryOptions = Object.entries(SPECIALTY_CATEGORY).map(([value, label]) => ({ value, label }))
 const dateRange = [
   { key: 'date_from', label: 'ចាប់ពី', type: 'date', width: '150px' },
   { key: 'date_to', label: 'ដល់', type: 'date', width: '150px' },
@@ -25,14 +27,19 @@ const dateRange = [
 export const configs = {
   positions: {
     title: 'មុខតំណែង', endpoint: '/positions', module: 'positions', refreshLookups: true,
-    columns: [...nameCols, { key: 'grade', label: 'កម្រិត', width: 90 }, { key: 'sort_order', label: 'លំដាប់', width: 90 }, activeCol],
-    fields: [...nameFields, { key: 'grade', label: 'កម្រិត', type: 'number', span: 8 },
-      { key: 'sort_order', label: 'លំដាប់', type: 'number', default: 0, span: 8 }, { ...activeField, span: 8 }],
+    columns: [...nameCols, { key: 'grade', label: 'កម្រិត', width: 90 },
+      { key: 'salary', label: 'ប្រាក់បៀវត្សមុខតំណែង', width: 170, value: (r) => (r.salary == null ? '' : Number(r.salary).toLocaleString('en-US')) },
+      { key: 'sort_order', label: 'លំដាប់', width: 90 }, activeCol],
+    fields: [...nameFields, { key: 'grade', label: 'កម្រិត', type: 'number', span: 6 },
+      { key: 'salary', label: 'ប្រាក់បៀវត្សមុខតំណែង (រៀល)', type: 'number', span: 8 },
+      { key: 'sort_order', label: 'លំដាប់', type: 'number', default: 0, span: 5 }, { ...activeField, span: 5 }],
   },
   specialties: {
     title: 'ជំនាញឯកទេស', endpoint: '/specialties', module: 'specialties', refreshLookups: true,
-    columns: [...nameCols, activeCol],
-    fields: [...nameFields, activeField],
+    columns: [...nameCols, { key: 'category', label: 'វិស័យ', width: 120, value: (r) => SPECIALTY_CATEGORY[r.category] }, activeCol],
+    filters: [{ key: 'category', label: 'វិស័យ', type: 'select', width: '150px', options: specialtyCategoryOptions }],
+    fields: [...nameFields, { key: 'category', label: 'វិស័យ', type: 'select', required: true, default: 'military', span: 12, options: specialtyCategoryOptions },
+      { ...activeField, span: 12 }],
   },
   documentTypes: {
     title: 'ប្រភេទឯកសារ', endpoint: '/document-types', module: 'doc_types', refreshLookups: true,

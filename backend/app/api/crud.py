@@ -29,6 +29,7 @@ def crud_router(
     base_query: Callable | None = None,
     before_save: Callable | None = None,
     after_save: Callable | None = None,
+    before_delete: Callable | None = None,
     after_delete: Callable | None = None,
     tags: list[str] | None = None,
 ) -> APIRouter:
@@ -37,6 +38,7 @@ def crud_router(
     base_query(stmt, db, user) -> stmt   : extra filtering (e.g. unit scope)
     before_save(db, user, obj, data, is_new): validation / derived fields
     after_save(db, user, obj, is_new): side effects (e.g. strength movements)
+    before_delete(db, user, obj): raise HTTPException to refuse the delete
     after_delete(db, user, obj): undo side effects
     """
     router = APIRouter(prefix=prefix, tags=tags or [prefix.strip("/")])
@@ -140,6 +142,8 @@ def crud_router(
     def delete_item(item_id: int, request: Request, db: Session = Depends(get_db),
                     user: User = Depends(require(module, "delete"))):
         obj = _get(db, user, item_id)
+        if before_delete:
+            before_delete(db, user, obj)
         before = to_dict(obj)
         try:
             if soft:

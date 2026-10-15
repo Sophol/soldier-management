@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
-import { fmtDateLong, khDigits } from '@/utils/format'
+import { fmtDateLong, khDigits, todayISO } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,7 +60,7 @@ function cell(row, key) {
         </tbody>
       </table>
       <div class="sign">
-        <div>{{ fmtDateLong(new Date().toISOString().slice(0, 10)) }}</div>
+        <div>{{ fmtDateLong(todayISO()) }}</div>
         <div class="moul">អ្នករៀបចំ</div>
       </div>
     </div>

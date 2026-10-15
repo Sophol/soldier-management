@@ -20,7 +20,7 @@ from app.models import (
 )
 from app.schemas import AwardIn, DisciplineIn, RetirementIn, SeparationIn, StrengthIn, TrainingCourseIn
 from app.services.common import scope_unit_ids, to_dict
-from app.services.soldier import add_movement, status_id_by_code
+from app.services.soldier import add_movement, is_inactive, status_id_by_code
 
 router = APIRouter()
 
@@ -57,10 +57,20 @@ def _check_soldier(db: Session, user: User, soldier_id: int) -> Soldier:
     return s
 
 
+def _check_period(data: dict) -> None:
+    if data.get("start_date") and data.get("end_date") and data["end_date"] < data["start_date"]:
+        raise HTTPException(400, "ថ្ងៃបញ្ចប់ត្រូវនៅក្រោយថ្ងៃចាប់ផ្ដើម")
+
+
 def _soldier_hook(db, user, obj, data, is_new):
     _check_soldier(db, user, data["soldier_id"])
     if not is_new and data["soldier_id"] != obj.soldier_id:
         raise HTTPException(400, "មិនអាចប្ដូរយោធិនក្នុងកំណត់ត្រានេះបានទេ")
+
+
+def _discipline_hook(db, user, obj, data, is_new):
+    _soldier_hook(db, user, obj, data, is_new)
+    _check_period(data)
 
 
 # ---------------- training ----------------
@@ -79,14 +89,14 @@ def _course_before(db, user, obj, data, is_new):
         _check_soldier(db, user, p["soldier_id"])
         parts.append(TrainingParticipant(**p))
     data["participants"] = parts
-    if data.get("start_date") and data.get("end_date") and data["end_date"] < data["start_date"]:
-        raise HTTPException(400, "ថ្ងៃបញ្ចប់ត្រូវនៅក្រោយថ្ងៃចាប់ផ្ដើម")
+    _check_period(data)
 
 
 router.include_router(crud_router(
     prefix="/training/courses", model=TrainingCourse, module="training", schema=TrainingCourseIn,
     search_fields=(TrainingCourse.name, TrainingCourse.institution),
-    filter_fields={"course_type": TrainingCourse.course_type, "specialty_id": TrainingCourse.specialty_id,
+    filter_fields={"course_type": TrainingCourse.course_type, "level": TrainingCourse.level,
+                   "specialty_id": TrainingCourse.specialty_id,
                    "date_from": TrainingCourse.start_date, "date_to": TrainingCourse.start_date},
     order_by=(TrainingCourse.start_date.desc(), TrainingCourse.id.desc()),
     serialize=course_out, before_save=_course_before, tags=["training"],
@@ -110,7 +120,7 @@ router.include_router(crud_router(
     filter_fields={"soldier_id": DisciplineRecord.soldier_id, "discipline_type_id": DisciplineRecord.discipline_type_id,
                    "date_from": DisciplineRecord.decision_date, "date_to": DisciplineRecord.decision_date},
     order_by=(DisciplineRecord.decision_date.desc(), DisciplineRecord.id.desc()),
-    serialize=discipline_out, base_query=scoped(DisciplineRecord), before_save=_soldier_hook,
+    serialize=discipline_out, base_query=scoped(DisciplineRecord), before_save=_discipline_hook,
 ))
 router.include_router(crud_router(
     prefix="/awards", model=AwardRecord, module="awards", schema=AwardIn,
@@ -123,6 +133,13 @@ router.include_router(crud_router(
 
 
 # ---------------- retirement / category 2 / separation ----------------
+
+def _leave_before(db, user, obj, data, is_new):
+    _soldier_hook(db, user, obj, data, is_new)
+    if is_new and is_inactive(db, db.get(Soldier, data["soldier_id"])):
+        # a second leave record would count the soldier out of the strength twice
+        raise HTTPException(400, "យោធិននេះបានចូលនិវត្តន៍ ឬចេញពីជួររួចហើយ")
+
 
 def _leave_after_save(table: str, status_code_fn, reason_fn):
     def hook(db: Session, user: User, obj, is_new: bool):
@@ -162,7 +179,7 @@ router.include_router(crud_router(
     filter_fields={"type": RetirementRecord.type, "soldier_id": RetirementRecord.soldier_id,
                    "date_from": RetirementRecord.effective_date, "date_to": RetirementRecord.effective_date},
     order_by=(RetirementRecord.effective_date.desc(), RetirementRecord.id.desc()),
-    serialize=retirement_out, base_query=scoped(RetirementRecord), before_save=_soldier_hook,
+    serialize=retirement_out, base_query=scoped(RetirementRecord), before_save=_leave_before,
     after_save=_leave_after_save("retirement_records", lambda o: "retired" if o.type == "pension" else "category2",
                                  lambda o: "retire" if o.type == "pension" else "category2"),
     after_delete=_leave_after_delete("retirement_records"), tags=["retirement"],
@@ -173,7 +190,7 @@ router.include_router(crud_router(
     filter_fields={"reason_id": SeparationRecord.reason_id, "soldier_id": SeparationRecord.soldier_id,
                    "date_from": SeparationRecord.effective_date, "date_to": SeparationRecord.effective_date},
     order_by=(SeparationRecord.effective_date.desc(), SeparationRecord.id.desc()),
-    serialize=separation_out, base_query=scoped(SeparationRecord), before_save=_soldier_hook,
+    serialize=separation_out, base_query=scoped(SeparationRecord), before_save=_leave_before,
     after_save=_leave_after_save("separation_records", lambda o: "separated", lambda o: "separate"),
     after_delete=_leave_after_delete("separation_records"), tags=["separation"],
 ))
@@ -194,17 +211,24 @@ def movement_out(m: StrengthMovement) -> dict:
 
 
 def _movement_scope(stmt, db, user):
+    # movements of deleted soldiers no longer count
+    stmt = stmt.where(StrengthMovement.soldier_id.in_(select(Soldier.id).where(Soldier.deleted_at.is_(None))))
     ids = scope_unit_ids(db, user)
     return stmt.where(StrengthMovement.unit_id.in_(ids)) if ids is not None else stmt
 
 
 def _movement_before(db, user, obj, data, is_new):
     _check_soldier(db, user, data["soldier_id"])
-    data["source_table"] = None if is_new else obj.source_table
-    if not is_new and obj.source_table:
-        raise HTTPException(400, "កំណត់ត្រានេះបង្កើតដោយស្វ័យប្រវត្តិ មិនអាចកែប្រែបានទេ")
+    if not is_new:
+        _movement_not_auto(db, user, obj)
     if data["movement_date"] > date.today():
         raise HTTPException(400, "កាលបរិច្ឆេទមិនអាចនៅថ្ងៃអនាគត")
+
+
+def _movement_not_auto(db, user, obj):
+    # rows written by soldiers/decisions/retirements are kept in sync by those modules
+    if obj.source_table:
+        raise HTTPException(400, "កំណត់ត្រានេះបង្កើតដោយស្វ័យប្រវត្តិ មិនអាចកែប្រែ ឬលុបបានទេ")
 
 
 router.include_router(crud_router(
@@ -214,5 +238,6 @@ router.include_router(crud_router(
                    "unit_id": StrengthMovement.unit_id, "soldier_id": StrengthMovement.soldier_id,
                    "date_from": StrengthMovement.movement_date, "date_to": StrengthMovement.movement_date},
     order_by=(StrengthMovement.movement_date.desc(), StrengthMovement.id.desc()),
-    serialize=movement_out, base_query=_movement_scope, before_save=_movement_before, tags=["strength"],
+    serialize=movement_out, base_query=_movement_scope, before_save=_movement_before,
+    before_delete=_movement_not_auto, tags=["strength"],
 ))

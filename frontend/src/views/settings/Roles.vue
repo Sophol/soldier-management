@@ -36,10 +36,12 @@ function toggle(m, a, v) {
 }
 function toggleRow(m, v) {
   const s = new Set(checked.value)
-  catalog.value.actions.forEach((a) => (v ? s.add(`${m}.${a}`) : s.delete(`${m}.${a}`)))
+  actionsOf(m).forEach((a) => (v ? s.add(`${m}.${a}`) : s.delete(`${m}.${a}`)))
   checked.value = s
 }
-const rowAll = (m) => catalog.value.actions.every((a) => has(m, a))
+// some modules use only some actions (e.g. the approval levels: "approve" only)
+const actionsOf = (m) => catalog.value.modules.find((x) => x.key === m)?.actions || catalog.value.actions
+const rowAll = (m) => actionsOf(m).every((a) => has(m, a))
 
 async function save() {
   saving.value = true
@@ -79,7 +81,7 @@ onMounted(load)
       <el-col :xs="24" :md="6">
         <el-card shadow="never" header="តួនាទី">
           <div v-for="r in roles" :key="r.id" class="role" :class="{ active: r.id === selected }" @click="select(r.id)">
-            <div><b>{{ r.name }}</b><div class="muted small">{{ r.description }}</div></div>
+            <div><b>{{ r.description || r.name }}</b><div class="muted small">{{ r.name }}</div></div>
             <el-tag v-if="r.is_super" size="small" type="danger">ទាំងអស់</el-tag>
           </div>
         </el-card>
@@ -88,7 +90,7 @@ onMounted(load)
         <el-card v-if="role" shadow="never">
           <template #header>
             <div class="matrix-head">
-              <span>សិទ្ធិរបស់ <b>{{ role.name }}</b></span>
+              <span>សិទ្ធិរបស់ <b>{{ role.description || role.name }}</b></span>
               <span>
                 <el-button v-if="!role.is_super && auth.can('roles.delete')" type="danger" plain icon="Delete" @click="removeRole">លុបតួនាទី</el-button>
                 <el-button v-if="editable" type="primary" icon="Check" :loading="saving" @click="save">រក្សាទុក</el-button>
@@ -104,7 +106,7 @@ onMounted(load)
             </el-table-column>
             <el-table-column v-for="a in catalog.actions" :key="a" :label="ACTION_LABEL[a]" width="84" align="center">
               <template #default="{ row }">
-                <el-checkbox :model-value="has(row.key, a)" :disabled="!editable" @change="(v) => toggle(row.key, a, v)" />
+                <el-checkbox v-if="actionsOf(row.key).includes(a)" :model-value="has(row.key, a)" :disabled="!editable" @change="(v) => toggle(row.key, a, v)" />
               </template>
             </el-table-column>
           </el-table>

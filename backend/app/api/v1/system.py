@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user, require
-from app.core.permissions import ACTIONS, MODULES
+from app.core.permissions import ACTIONS, MODULES, module_actions
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -28,14 +28,15 @@ router = APIRouter()
 def user_out(u: User) -> dict:
     return {
         "id": u.id, "username": u.username, "full_name": u.full_name, "phone": u.phone,
-        "role_id": u.role_id, "role_name": u.role.name, "is_super": u.role.is_super,
+        # the Khmer description is the label people see; the English name stays the role's key
+        "role_id": u.role_id, "role_name": u.role.description or u.role.name, "is_super": u.role.is_super,
         "unit_scope_id": u.unit_scope_id, "unit_scope_name": u.unit_scope.name_kh if u.unit_scope else None,
         "active": u.active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
     }
 
 
 def me_out(u: User) -> dict:
-    perms = sorted(f"{m}.{a}" for m in MODULES for a in ACTIONS) if u.role.is_super else sorted(u.permission_keys())
+    perms = sorted(f"{m}.{a}" for m in MODULES for a in module_actions(m)) if u.role.is_super else sorted(u.permission_keys())
     return {**user_out(u), "permissions": perms}
 
 
@@ -176,7 +177,7 @@ def delete_user(user_id: int, request: Request, db: Session = Depends(get_db),
 
 @router.get("/permissions/catalog", tags=["roles"])
 def permission_catalog(_: User = Depends(get_current_user)):
-    return {"modules": [{"key": k, "name": v} for k, v in MODULES.items()], "actions": ACTIONS}
+    return {"modules": [{"key": k, "name": v, "actions": module_actions(k)} for k, v in MODULES.items()], "actions": ACTIONS}
 
 
 @router.get("/roles", tags=["roles"])
@@ -208,8 +209,13 @@ def update_role(role_id: int, payload: RoleIn, request: Request, db: Session = D
     if not r:
         raise HTTPException(404, "រកមិនឃើញ")
     r.name, r.description = payload.name, payload.description
-    audit(db, actor, "update", r, request=request)
-    db.commit()
+    try:
+        db.flush()
+        audit(db, actor, "update", r, request=request)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "ឈ្មោះតួនាទីមានរួចហើយ")
     return to_dict(r)
 
 

@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, SmallInteger, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, Numeric, SmallInteger, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base, TimestampMixin
@@ -41,6 +41,10 @@ class Rank(TimestampMixin, Base):
     # higher value = higher rank; used to validate promotions
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     min_years_to_next: Mapped[int | None] = mapped_column(SmallInteger)
+    branch: Mapped[str] = mapped_column(String(10), default="army")  # army ជើងគោក / navy ជើងទឹក / all
+    quota: Mapped[int | None] = mapped_column(Integer)  # authorised number of soldiers in this rank
+    retirement_age: Mapped[int | None] = mapped_column(SmallInteger)  # overrides the per-gender setting
+    salary: Mapped[float | None] = mapped_column(Numeric(14, 2))  # monthly salary for the rank (riel)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     rank_class: Mapped[RankClass] = relationship()
@@ -52,8 +56,27 @@ class Position(TimestampMixin, Base):
     name_kh: Mapped[str] = mapped_column(String(255))
     name_en: Mapped[str | None] = mapped_column(String(255))
     grade: Mapped[int | None] = mapped_column(SmallInteger)
+    salary: Mapped[float | None] = mapped_column(Numeric(14, 2))  # monthly position allowance (riel)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class UnitPosition(TimestampMixin, Base):
+    """Staffing table (ក្របខណ្ឌ): the positions a unit is authorised to have, how many, and for which ranks."""
+
+    __tablename__ = "unit_positions"
+    __table_args__ = (UniqueConstraint("unit_id", "position_id", name="uq_unit_position"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"), index=True)
+    position_id: Mapped[int] = mapped_column(ForeignKey("positions.id"), index=True)
+    quota: Mapped[int] = mapped_column(SmallInteger, default=1)
+    min_rank_id: Mapped[int | None] = mapped_column(ForeignKey("ranks.id"))
+    max_rank_id: Mapped[int | None] = mapped_column(ForeignKey("ranks.id"))
+    salary: Mapped[float | None] = mapped_column(Numeric(14, 2))  # overrides the position allowance for this unit
+    notes: Mapped[str | None] = mapped_column(String(500))
+
+    unit = relationship("Unit", lazy="joined")
+    position = relationship("Position", lazy="joined")
 
 
 class Specialty(TimestampMixin, Base):
@@ -61,6 +84,7 @@ class Specialty(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name_kh: Mapped[str] = mapped_column(String(255))
     name_en: Mapped[str | None] = mapped_column(String(255))
+    category: Mapped[str] = mapped_column(String(10), default="military")  # military យោធា / civil ស៊ីវិល
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 

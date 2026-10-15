@@ -38,6 +38,7 @@ http.interceptors.response.use(
       } catch {
         tokens.clear()
         window.location.href = '/login'
+        return Promise.reject(error) // session is over: no error toast on the way to the login page
       } finally {
         refreshing = null
       }
@@ -45,6 +46,10 @@ http.interceptors.response.use(
     if (response?.status === 401 && !config.url.includes('/auth/login')) {
       tokens.clear()
       if (window.location.pathname !== '/login') window.location.href = '/login'
+    }
+    // blob requests (downloads, Excel export) get their JSON error body as a Blob: decode it so the message shows
+    if (response?.data instanceof Blob && response.data.type.includes('json')) {
+      try { response.data = JSON.parse(await response.data.text()) } catch { /* keep the generic message */ }
     }
     if (!config.silent) ElMessage.error(errorMessage(error))
     return Promise.reject(error)
@@ -71,7 +76,7 @@ export async function download(url, params = {}, fallbackName = 'download') {
   a.href = href
   a.download = name
   a.click()
-  URL.revokeObjectURL(href)
+  setTimeout(() => URL.revokeObjectURL(href), 1000) // revoking at once can cancel the download in some browsers
 }
 
 /** Fetch a protected file as an object URL (for <img> / preview). */

@@ -14,6 +14,7 @@ const LABELS = {
   retirement_age_male: 'អាយុចូលនិវត្តន៍ — ប្រុស',
   retirement_age_female: 'អាយុចូលនិវត្តន៍ — ស្រី',
   alert_months_ahead: 'ជូនដំណឹងនិវត្តន៍មុន (ខែ)',
+  workflow_overdue_days: 'សេចក្ដីសម្រេចនៅជាប់ដំណាក់កាលអនុម័តយូរបំផុត (ថ្ងៃ) មុនជូនដំណឹង',
 }
 
 onMounted(async () => {

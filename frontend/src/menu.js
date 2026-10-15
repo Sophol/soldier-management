@@ -6,6 +6,7 @@ export const menu = [
       { key: 'units', to: '/org/units', perm: 'org_units.view' },
       { key: 'ranks', to: '/org/ranks', perm: 'ranks.view' },
       { key: 'positions', to: '/org/positions', perm: 'positions.view' },
+      { key: 'staffing', to: '/org/staffing', perm: 'positions.view' },
       { key: 'specialties', to: '/org/specialties', perm: 'specialties.view' },
       { key: 'docTypes', to: '/org/document-types', perm: 'doc_types.view' },
     ],
@@ -42,6 +43,11 @@ export const menu = [
   { key: 'awards', icon: 'Trophy', to: '/awards', perm: 'awards.view' },
   { key: 'retirement', icon: 'Calendar', to: '/retirement', perm: 'retirement.view' },
   { key: 'separation', icon: 'Remove', to: '/separation', perm: 'separation.view' },
+  {
+    key: 'recruitment', icon: 'Flag', children: [
+      { key: 'conscripts', to: '/conscripts', perm: 'conscripts.view' },
+    ],
+  },
   { key: 'reports', icon: 'DataAnalysis', to: '/reports', perm: 'reports.view' },
   {
     key: 'settings', icon: 'Setting', children: [

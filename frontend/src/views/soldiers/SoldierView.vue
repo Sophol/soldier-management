@@ -21,6 +21,7 @@ onMounted(async () => {
 })
 
 const change = (a, b) => (b ? `${a || '-'} → ${b}` : '')
+const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))} រៀល`)
 </script>
 
 <template>
@@ -50,6 +51,9 @@ const change = (a, b) => (b ? `${a || '-'} → ${b}` : '')
             <el-descriptions-item label="អាយុ">{{ num(s.age) }} ឆ្នាំ</el-descriptions-item>
             <el-descriptions-item label="រយៈពេលបម្រើការងារ">{{ num(s.service_length) }}</el-descriptions-item>
             <el-descriptions-item label="រយៈពេលឡើងស័ក្តិ">{{ num(s.time_in_rank) }}</el-descriptions-item>
+            <el-descriptions-item label="រយៈពេលមុខតំណែង">{{ num(s.time_in_position) }}</el-descriptions-item>
+            <el-descriptions-item label="ចំណុះស្ថាប័នកងឯកភាព">{{ s.institution_name }}</el-descriptions-item>
+            <el-descriptions-item label="ស្ថាប័នកងឯកភាព-អង្គភាព" :span="2">{{ s.unit_path }}</el-descriptions-item>
           </el-descriptions>
         </div>
       </div>
@@ -69,6 +73,8 @@ const change = (a, b) => (b ? `${a || '-'} → ${b}` : '')
             <el-descriptions-item label="ថ្ងៃមុខតំណែង">{{ fmtDate(s.position_date) }}</el-descriptions-item>
             <el-descriptions-item label="ថ្ងៃផ្លាស់ប្ដូរកងឯកភាព">{{ fmtDate(s.unit_transfer_date) }}</el-descriptions-item>
             <el-descriptions-item label="មកពីស្ថាប័នកងឯកភាព" :span="2">{{ s.from_unit_text }}</el-descriptions-item>
+            <el-descriptions-item label="ប្រាក់បៀវត្សតាមឋានន្តរស័ក្តិ">{{ money(s.rank_salary) }}</el-descriptions-item>
+            <el-descriptions-item label="ប្រាក់បៀវត្សមុខតំណែង" :span="2">{{ money(s.position_salary) }}</el-descriptions-item>
             <el-descriptions-item label="កម្រិតវប្បធម៌">{{ s.education_level_name }}</el-descriptions-item>
             <el-descriptions-item label="ជំនាញឯកទេស">{{ s.specialty_name }}</el-descriptions-item>
             <el-descriptions-item label="ប្រភេទឈាម">{{ s.blood_type_name }}</el-descriptions-item>

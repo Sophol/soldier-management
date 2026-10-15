@@ -3,7 +3,7 @@ document types, lookups, geography, countries."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.api.crud import crud_router
 from app.core.database import get_db
@@ -21,6 +21,7 @@ from app.models import (
     Soldier,
     Specialty,
     Unit,
+    UnitPosition,
     User,
     Village,
 )
@@ -31,15 +32,17 @@ from app.schemas import (
     DistrictIn,
     DocumentTypeIn,
     LookupIn,
-    NamedIn,
     PositionIn,
     ProvinceIn,
     RankClassIn,
     RankIn,
+    SpecialtyIn,
     UnitIn,
+    UnitPositionIn,
     VillageIn,
 )
 from app.services.common import to_dict
+from app.services.staffing import filled_by_rank, filled_by_unit_position
 
 router = APIRouter()
 extra = APIRouter()  # custom routes that must be registered before the generic /{id} routes
@@ -61,6 +64,11 @@ def _unit_before_save(db: Session, user: User, obj: Unit, data: dict, is_new: bo
         data["level"] = parent.level + 1
     else:
         data["level"] = 1
+    if not is_new and data["level"] != obj.level:
+        # the whole subtree moves with the unit: its deepest descendant must stay within level 4
+        deepest = db.scalar(select(func.max(Unit.level)).where(Unit.path.like(f"{obj.path}%"))) or obj.level
+        if deepest + data["level"] - obj.level > 4:
+            raise HTTPException(400, "អង្គភាពរងរបស់អង្គភាពនេះ នឹងលើសពីកម្រិតទី៤ (អង្គភាពចំណុះផ្ទាល់)")
 
 
 def _unit_after_save(db: Session, user: User, obj: Unit, is_new: bool) -> None:
@@ -155,12 +163,54 @@ def village_path(village_id: int, db: Session = Depends(get_db), _: User = Depen
 
 
 def _rank_out(r: Rank) -> dict:
-    return {**to_dict(r), "rank_class_name": r.rank_class.name_kh if r.rank_class else None}
+    filled = filled_by_rank(object_session(r)).get(r.id, 0)
+    return {**to_dict(r), "rank_class_name": r.rank_class.name_kh if r.rank_class else None, "filled": filled,
+            "vacant": None if r.quota is None else r.quota - filled}
+
+
+# ---------------- staffing table (ក្របខណ្ឌមុខតំណែងតាមអង្គភាព) ----------------
+
+def _unit_position_out(up: UnitPosition) -> dict:
+    db = object_session(up)
+    filled = filled_by_unit_position(db, up.unit_id).get(up.position_id, 0)
+    ranks = {r.id: r.name_kh for r in db.scalars(select(Rank).where(Rank.id.in_(
+        [i for i in (up.min_rank_id, up.max_rank_id) if i])))}
+    return {**to_dict(up), "unit_name": up.unit.name_kh, "position_name": up.position.name_kh,
+            "min_rank_name": ranks.get(up.min_rank_id), "max_rank_name": ranks.get(up.max_rank_id),
+            "salary_effective": float(up.salary if up.salary is not None else (up.position.salary or 0)) or None,
+            "filled": filled, "vacant": up.quota - filled}
+
+
+def _unit_position_check(db, user, obj, data, is_new):
+    if not db.get(Unit, data["unit_id"]) or not db.get(Position, data["position_id"]):
+        raise HTTPException(400, "អង្គភាព ឬមុខតំណែងមិនត្រឹមត្រូវ")
+    low = db.get(Rank, data["min_rank_id"]) if data.get("min_rank_id") else None
+    high = db.get(Rank, data["max_rank_id"]) if data.get("max_rank_id") else None
+    if low and high and low.sort_order > high.sort_order:
+        raise HTTPException(400, "ឋានន្តរស័ក្តិទាបបំផុត ត្រូវតែទាបជាងឬស្មើឋានន្តរស័ក្តិខ្ពស់បំផុត")
+
+
+# lookup codes the application logic depends on (statuses set by retirement/separation, form logic)
+SYSTEM_LOOKUP_CODES = {
+    "soldier_status": {"active", "studying", "suspended", "retired", "category2", "separated"},
+    "marital_status": {"single"},
+}
+
+
+def _is_system_lookup(obj: Lookup) -> bool:
+    return obj.code in SYSTEM_LOOKUP_CODES.get(obj.category, ())
 
 
 def _lookup_check(db, user, obj, data, is_new):
     if data["category"] not in LOOKUP_CATEGORIES:
         raise HTTPException(400, "ប្រភេទបញ្ជីមិនត្រឹមត្រូវ")
+    if not is_new and _is_system_lookup(obj) and (data["category"], data["code"]) != (obj.category, obj.code):
+        raise HTTPException(400, f"កូដ '{obj.code}' ប្រើដោយប្រព័ន្ធ មិនអាចប្ដូរបានទេ (អាចប្ដូរតែឈ្មោះ)")
+
+
+def _lookup_delete_check(db, user, obj):
+    if _is_system_lookup(obj):
+        raise HTTPException(400, f"កូដ '{obj.code}' ប្រើដោយប្រព័ន្ធ មិនអាចលុបបានទេ (អាចបិទមិនឱ្យប្រើបាន)")
 
 
 router.include_router(extra)
@@ -176,7 +226,8 @@ router.include_router(crud_router(
 ))
 router.include_router(crud_router(
     prefix="/ranks", model=Rank, module="ranks", schema=RankIn, public_read=True,
-    search_fields=(Rank.name_kh, Rank.name_en), filter_fields={"rank_class_id": Rank.rank_class_id},
+    search_fields=(Rank.name_kh, Rank.name_en),
+    filter_fields={"rank_class_id": Rank.rank_class_id, "branch": Rank.branch},
     order_by=(Rank.sort_order.desc(),), serialize=_rank_out, tags=["ranks"],
 ))
 router.include_router(crud_router(
@@ -184,8 +235,15 @@ router.include_router(crud_router(
     search_fields=(Position.name_kh, Position.name_en), order_by=(Position.sort_order, Position.name_kh),
 ))
 router.include_router(crud_router(
-    prefix="/specialties", model=Specialty, module="specialties", schema=NamedIn, public_read=True,
-    search_fields=(Specialty.name_kh, Specialty.name_en), order_by=(Specialty.name_kh,),
+    prefix="/specialties", model=Specialty, module="specialties", schema=SpecialtyIn, public_read=True,
+    search_fields=(Specialty.name_kh, Specialty.name_en), filter_fields={"category": Specialty.category},
+    order_by=(Specialty.category, Specialty.name_kh),
+))
+router.include_router(crud_router(
+    prefix="/unit-positions", model=UnitPosition, module="positions", schema=UnitPositionIn,
+    filter_fields={"unit_id": UnitPosition.unit_id, "position_id": UnitPosition.position_id},
+    order_by=(UnitPosition.unit_id, UnitPosition.id), serialize=_unit_position_out,
+    before_save=_unit_position_check, tags=["positions"],
 ))
 router.include_router(crud_router(
     prefix="/document-types", model=DocumentType, module="doc_types", schema=DocumentTypeIn, public_read=True,
@@ -194,7 +252,7 @@ router.include_router(crud_router(
 router.include_router(crud_router(
     prefix="/lookups", model=Lookup, module="lookups", schema=LookupIn, public_read=True,
     search_fields=(Lookup.name_kh, Lookup.name_en), filter_fields={"category": Lookup.category},
-    order_by=(Lookup.category, Lookup.sort_order), before_save=_lookup_check,
+    order_by=(Lookup.category, Lookup.sort_order), before_save=_lookup_check, before_delete=_lookup_delete_check,
 ))
 router.include_router(crud_router(
     prefix="/countries", model=Country, module="lookups", schema=CountryIn, public_read=True,

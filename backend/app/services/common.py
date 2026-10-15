@@ -33,8 +33,10 @@ def to_dict(obj, exclude: set[str] | None = None) -> dict:
     }
 
 
-def name_of(obj) -> str | None:
-    return getattr(obj, "name_kh", None) if obj is not None else None
+def names_by_id(db: Session, model, ids) -> dict:
+    """{id: name_kh} for the given ids of a model with a name_kh column (None ids ignored)."""
+    ids = {i for i in ids if i}
+    return {o.id: o.name_kh for o in db.scalars(select(model).where(model.id.in_(ids)))} if ids else {}
 
 
 def audit(db: Session, user: User | None, action: str, obj=None, before: dict | None = None,

@@ -31,6 +31,21 @@ def _soldier(c, lk, unit_id, mid="TEST-0001", **kw):
     return r.json()
 
 
+WORKFLOW = ["review", "deputy_office", "chief_office", "deputy_department", "director", "leadership", "approved"]
+
+
+def publish(c, decision_id):
+    """Walk a draft decision through the whole approval workflow and publish it."""
+    d = c.post(f"{API}/decisions/{decision_id}/submit").json()
+    for expected in WORKFLOW[1:]:
+        assert d["status"] != "published"
+        d = c.post(f"{API}/decisions/{decision_id}/approve", json={"comment": "ok"}).json()
+        assert d["status"] == expected, d
+    d = c.post(f"{API}/decisions/{decision_id}/publish").json()
+    assert d["status"] == "published", d
+    return d
+
+
 def test_health_and_auth(client):
     assert client.get("/api/health").json() == {"status": "ok"}
     assert client.get(f"{API}/auth/me").status_code == 401
@@ -93,8 +108,7 @@ def test_promotion_decision_approve_and_cancel(admin):
     d = admin.post(f"{API}/decisions", json=body).json()
     assert d["status"] == "draft"
     assert admin.get(f"{API}/soldiers/{s['id']}").json()["current_rank_id"] == old_rank  # unchanged until approved
-    d = admin.post(f"{API}/decisions/{d['id']}/approve").json()
-    assert d["status"] == "approved"
+    d = publish(admin, d["id"])
     after = admin.get(f"{API}/soldiers/{s['id']}").json()
     assert after["current_rank_id"] == higher and after["rank_date"] == "2026-01-15"
     d = admin.post(f"{API}/decisions/{d['id']}/cancel").json()
@@ -110,7 +124,7 @@ def test_transfer_creates_movements(admin):
     body = {"kind": "transfer", "decision_no": "T-1", "decision_date": "2026-02-01", "effective_date": "2026-02-01",
             "items": [{"soldier_id": s["id"], "new_unit_id": unit_b["id"]}]}
     d = admin.post(f"{API}/decisions", json=body).json()
-    admin.post(f"{API}/decisions/{d['id']}/approve")
+    publish(admin, d["id"])
     after = admin.get(f"{API}/soldiers/{s['id']}").json()
     assert after["current_unit_id"] == unit_b["id"] and after["from_unit_text"] == unit_a["name_kh"]
     mv = admin.get(f"{API}/strength-movements", params={"soldier_id": s["id"]}).json()["items"]

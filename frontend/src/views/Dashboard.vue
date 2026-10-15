@@ -121,6 +121,12 @@ const pending = computed(() => {
             <div v-for="p in pending" :key="p.label" class="alert-item" @click="router.push(p.to)">
               <el-tag type="warning" round>{{ num(p.value) }}</el-tag><span>{{ p.label }}</span>
             </div>
+            <div v-if="data.workflow" class="alert-item">
+              <el-tag type="primary" effect="dark" round>{{ num(data.workflow.waiting_for_me) }}</el-tag><span>រង់ចាំខ្ញុំអនុម័ត</span>
+            </div>
+            <div v-if="data.workflow?.overdue" class="alert-item">
+              <el-tag type="danger" effect="dark" round>{{ num(data.workflow.overdue) }}</el-tag><span>នៅជាប់ដំណាក់កាលយូរលើសកំណត់</span>
+            </div>
           </el-card>
         </el-col>
       </el-row>

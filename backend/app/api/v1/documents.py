@@ -25,6 +25,7 @@ FILE_OWNERS = {
     "award": "awards",
     "retirement": "retirement",
     "separation": "separation",
+    "conscript": "conscripts",  # scanned record (ស្កេនប្រវត្តិរូប), exemption papers
 }
 
 
@@ -48,6 +49,13 @@ def _doc_in_before(db, user, obj, data, is_new):
     data["year"] = data["doc_date"].year
 
 
+def allocate_outgoing_number(db: Session, year: int) -> tuple[int, str]:
+    """Next sequence number of the year and its formatted document number."""
+    seq = (db.scalar(select(func.max(DocumentOutgoing.seq)).where(DocumentOutgoing.year == year)) or 0) + 1
+    fmt = get_setting(db, "outgoing_number_format", "{seq}/{yy}")
+    return seq, fmt.format(seq=seq, yyyy=year, yy=str(year)[-2:])
+
+
 def _doc_out_before(db: Session, user, obj, data, is_new):
     year = data["doc_date"].year
     data["year"] = year
@@ -55,17 +63,13 @@ def _doc_out_before(db: Session, user, obj, data, is_new):
         if not is_new and obj.outgoing_no and obj.year == year:
             data["outgoing_no"] = obj.outgoing_no
             return
-        seq = (db.scalar(select(func.max(DocumentOutgoing.seq)).where(DocumentOutgoing.year == year)) or 0) + 1
-        fmt = get_setting(db, "outgoing_number_format", "{seq}/{yy}")
-        data["seq"] = seq
-        data["outgoing_no"] = fmt.format(seq=seq, yyyy=year, yy=str(year)[-2:])
+        data["seq"], data["outgoing_no"] = allocate_outgoing_number(db, year)
 
 
 @router.get("/documents/outgoing/next-number", tags=["documents"])
 def next_outgoing_number(year: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    seq = (db.scalar(select(func.max(DocumentOutgoing.seq)).where(DocumentOutgoing.year == year)) or 0) + 1
-    fmt = get_setting(db, "outgoing_number_format", "{seq}/{yy}")
-    return {"seq": seq, "number": fmt.format(seq=seq, yyyy=year, yy=str(year)[-2:])}
+    seq, number = allocate_outgoing_number(db, year)
+    return {"seq": seq, "number": number}
 
 
 router.include_router(crud_router(
