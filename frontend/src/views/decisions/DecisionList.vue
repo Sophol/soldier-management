@@ -117,18 +117,18 @@ async function showDetail(row) {
 
 // workflow buttons: the server sends the actions this user may do now (row.actions)
 const ACTIONS = {
-  submit: { label: 'ដាក់ជូនពិនិត្យ', type: 'primary', icon: 'Promotion', confirm: 'ដាក់សំណុំរឿងនេះជូនមន្ត្រីជំនាញពិនិត្យលក្ខខណ្ឌ?' },
+  submit: { label: 'ដាក់ជូន', type: 'primary', icon: 'Promotion', confirm: 'ដាក់សំណុំរឿងនេះជូននាយរងការិយាល័យ (ទទួលទិស)?' },
   approve: { label: 'អនុម័ត', type: 'success', icon: 'Select', prompt: 'មតិ (ស្រេចចិត្ត)' },
   return: { label: 'ត្រឡប់ទៅកែ', type: 'warning', icon: 'Back', prompt: 'មូលហេតុដែលត្រឡប់ទៅកែ', required: true },
   reject: { label: 'បដិសេធ', type: 'danger', icon: 'CircleClose', prompt: 'មូលហេតុនៃការបដិសេធ', required: true },
-  publish: { label: 'ចេញលិខិត និងផ្សព្វផ្សាយ', type: 'success', icon: 'Stamp' },
-  cancel: { label: 'លុបចោល', type: 'danger', icon: 'RefreshLeft', confirm: 'លុបចោលសេចក្ដីសម្រេចដែលបានផ្សព្វផ្សាយ? ព័ត៌មានយោធិននឹងត្រឡប់ទៅដូចមុនវិញ។' },
+  cancel: { label: 'លុបចោល', type: 'danger', icon: 'RefreshLeft', confirm: 'លុបចោលសេចក្ដីសម្រេចដែលបានអនុម័ត? ព័ត៌មានយោធិននឹងត្រឡប់ទៅដូចមុនវិញ។' },
 }
 const workflowActions = (d) => (d.actions || []).filter((a) => ACTIONS[a])
 
 async function act(row, action) {
   const m = ACTIONS[action]
-  if (action === 'publish') return openPublish(row)
+  // the director's approval is final: it registers the letter and updates the records
+  if (action === 'approve' && row.status === 'submitted') return openPublish(row)
   let comment = null
   if (m.prompt) {
     const { value } = await ElMessageBox.prompt(m.prompt, m.label, {
@@ -149,17 +149,17 @@ async function afterAction(row) {
   load()
 }
 
-// step 8: register the outgoing letter (number given now or allocated automatically) and update the records
+// final approval by the director: register the outgoing letter (number given now or allocated) and update the records
 const publishing = ref(null)
 function openPublish(row) {
-  publishing.value = { row, decision_no: row.decision_no || '', decision_date: row.decision_date }
+  publishing.value = { row, decision_no: row.decision_no || '', decision_date: row.decision_date, comment: '' }
 }
 async function publish() {
   const { row, decision_no, decision_date } = publishing.value
   saving.value = true
   try {
-    await http.post(`/decisions/${row.id}/publish`, { decision_no: decision_no || null, decision_date })
-    ElMessage.success('បានផ្សព្វផ្សាយ ហើយព័ត៌មានយោធិនត្រូវបានធ្វើបច្ចុប្បន្នភាព')
+    await http.post(`/decisions/${row.id}/approve`, { decision_no: decision_no || null, decision_date, comment: publishing.value.comment || null })
+    ElMessage.success('បានអនុម័ត ហើយព័ត៌មានយោធិនត្រូវបានធ្វើបច្ចុប្បន្នភាព')
     publishing.value = null
     await afterAction(row)
   } finally {
@@ -168,7 +168,7 @@ async function publish() {
 }
 
 const stepIndex = (status) => WORKFLOW.findIndex((w) => w.status === status)
-const STEP_ACTION = { submit: 'ដាក់ជូន', approve: 'អនុម័ត', return: 'ត្រឡប់ទៅកែ', reject: 'បដិសេធ', publish: 'ផ្សព្វផ្សាយ', cancel: 'លុបចោល' }
+const STEP_ACTION = { submit: 'ដាក់ជូន', approve: 'អនុម័ត', return: 'ត្រឡប់ទៅកែ', reject: 'បដិសេធ', publish: 'ផ្សព្វផ្សាយ', cancel: 'លុបចោល' } // publish: older logs
 const STEP_TYPE = { approve: 'success', publish: 'success', return: 'warning', reject: 'danger', cancel: 'danger', submit: 'primary' }
 
 async function remove(row) {
@@ -314,7 +314,7 @@ onMounted(load)
         </el-descriptions>
         <el-steps :active="stepIndex(detail.status)" :process-status="['rejected', 'cancelled'].includes(detail.status) ? 'error' : 'process'"
                   finish-status="success" align-center class="wf-steps">
-          <el-step v-for="w in WORKFLOW.slice(0, 8)" :key="w.status" :title="w.step" />
+          <el-step v-for="w in WORKFLOW" :key="w.status" :title="w.step" />
         </el-steps>
         <el-table :data="detail.items" border size="small" style="margin-top: 14px">
           <el-table-column type="index" label="ល.រ" width="55" />
@@ -343,19 +343,20 @@ onMounted(load)
       </template>
     </el-drawer>
 
-    <!-- step 8: publish -->
-    <el-dialog :model-value="!!publishing" title="ចេញលិខិត និងផ្សព្វផ្សាយ" width="520px" @close="publishing = null">
+    <!-- final approval by the director -->
+    <el-dialog :model-value="!!publishing" title="នាយកអនុម័ត" width="520px" @close="publishing = null">
       <template v-if="publishing">
         <el-alert type="info" show-icon :closable="false" style="margin-bottom: 12px"
-                  title="ប្រព័ន្ធនឹងចុះលេខលិខិតចេញ ហើយធ្វើបច្ចុប្បន្នភាពប្រវត្តិរូបយោធិនទាំងអស់ក្នុងសេចក្ដីសម្រេចនេះ។" />
+                  title="ការអនុម័តនេះជាការសម្រេចចុងក្រោយ៖ ប្រព័ន្ធនឹងចុះលេខលិខិតចេញ ហើយធ្វើបច្ចុប្បន្នភាពប្រវត្តិរូបយោធិនទាំងអស់។" />
         <el-form label-position="top">
           <el-form-item label="លេខសេចក្ដីសម្រេច (ទុកទំនេរ = តាមលេខលិខិតចេញ)"><el-input v-model="publishing.decision_no" /></el-form-item>
           <el-form-item label="ថ្ងៃចុះហត្ថលេខា"><el-date-picker v-model="publishing.decision_date" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item>
+          <el-form-item label="មតិ (ស្រេចចិត្ត)"><el-input v-model="publishing.comment" type="textarea" :rows="2" /></el-form-item>
         </el-form>
       </template>
       <template #footer>
         <el-button @click="publishing = null">បោះបង់</el-button>
-        <el-button type="success" icon="Stamp" :loading="saving" @click="publish">ផ្សព្វផ្សាយ</el-button>
+        <el-button type="success" icon="Select" :loading="saving" @click="publish">អនុម័ត</el-button>
       </template>
     </el-dialog>
   </div>

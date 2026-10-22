@@ -17,6 +17,13 @@ const soldierCols = [
   { key: 'unit_name', label: 'អង្គភាព', minWidth: 150 },
 ]
 const soldierField = { key: 'soldier_id', label: 'យោធិន', type: 'soldier', required: true }
+const RETIREMENT_TYPES = [{ value: 'pension', label: 'សោធននិវត្តន៍ (គ្រប់អាយុ)' },
+  { value: 'voluntary', label: 'ស្ម័គ្រចិត្តចូលនិវត្តន៍' }, { value: 'category2', label: 'យោធិនប្រភេទ២' }]
+const POSITION_LEVELS = [{ value: 1, label: 'មុខតំណែង' }, { value: 2, label: 'មុខតំណែងរង' }, { value: 3, label: 'មុខតំណែងចំណុះផ្ទាល់' }]
+// a position can sit under a level-1 or level-2 position, never under itself
+const parentPositions = (row, lk) => lk.list('positions')
+  .filter((p) => (p.level || 1) < 3 && p.id !== row.id)
+  .map((p) => ({ value: p.id, label: `${'— '.repeat((p.level || 1) - 1)}${p.name_kh}` }))
 const SPECIALTY_CATEGORY = { military: 'ជំនាញយោធា', civil: 'ជំនាញស៊ីវិល' }
 const specialtyCategoryOptions = Object.entries(SPECIALTY_CATEGORY).map(([value, label]) => ({ value, label }))
 const dateRange = [
@@ -26,20 +33,29 @@ const dateRange = [
 
 export const configs = {
   positions: {
-    title: 'មុខតំណែង', endpoint: '/positions', module: 'positions', refreshLookups: true,
-    columns: [...nameCols, { key: 'grade', label: 'កម្រិត', width: 90 },
+    title: 'មុខតំណែង', endpoint: '/positions', module: 'positions', refreshLookups: true, formWidth: '720px',
+    columns: [...nameCols,
+      { key: 'level_name', label: 'ថ្នាក់', width: 170, tag: (r) => ['', 'danger', 'warning', 'info'][r.level] },
+      { key: 'parent_name', label: 'ចំណុះមុខតំណែង', minWidth: 160 },
+      { key: 'grade', label: 'កម្រិត', width: 90 },
       { key: 'salary', label: 'ប្រាក់បៀវត្សមុខតំណែង', width: 170, value: (r) => (r.salary == null ? '' : Number(r.salary).toLocaleString('en-US')) },
       { key: 'sort_order', label: 'លំដាប់', width: 90 }, activeCol],
-    fields: [...nameFields, { key: 'grade', label: 'កម្រិត', type: 'number', span: 6 },
+    filters: [{ key: 'level', label: 'ថ្នាក់', type: 'select', width: '200px', options: POSITION_LEVELS }],
+    fields: [...nameFields,
+      { key: 'parent_id', label: 'ចំណុះមុខតំណែង (ទុកទំនេរ = មុខតំណែងថ្នាក់ទី១)', type: 'select', options: parentPositions },
+      { key: 'grade', label: 'កម្រិត', type: 'number', span: 6 },
       { key: 'salary', label: 'ប្រាក់បៀវត្សមុខតំណែង (រៀល)', type: 'number', span: 8 },
       { key: 'sort_order', label: 'លំដាប់', type: 'number', default: 0, span: 5 }, { ...activeField, span: 5 }],
   },
   specialties: {
     title: 'ជំនាញឯកទេស', endpoint: '/specialties', module: 'specialties', refreshLookups: true,
-    columns: [...nameCols, { key: 'category', label: 'វិស័យ', width: 120, value: (r) => SPECIALTY_CATEGORY[r.category] }, activeCol],
-    filters: [{ key: 'category', label: 'វិស័យ', type: 'select', width: '150px', options: specialtyCategoryOptions }],
-    fields: [...nameFields, { key: 'category', label: 'វិស័យ', type: 'select', required: true, default: 'military', span: 12, options: specialtyCategoryOptions },
-      { ...activeField, span: 12 }],
+    columns: [...nameCols, { key: 'category', label: 'វិស័យ', width: 120, value: (r) => SPECIALTY_CATEGORY[r.category] },
+      { key: 'section_name', label: 'ផ្នែក', minWidth: 170 }, activeCol],
+    filters: [{ key: 'category', label: 'វិស័យ', type: 'select', width: '150px', options: specialtyCategoryOptions },
+      { key: 'section_id', label: 'ផ្នែក', type: 'select', width: '200px', options: 'lookup:specialty_section' }],
+    fields: [...nameFields, { key: 'category', label: 'វិស័យ (យោធា / ស៊ីវិល)', type: 'select', required: true, default: 'military', span: 8, options: specialtyCategoryOptions },
+      { key: 'section_id', label: 'ផ្នែក', type: 'select', options: 'lookup:specialty_section', span: 10 },
+      { ...activeField, span: 6 }],
   },
   documentTypes: {
     title: 'ប្រភេទឯកសារ', endpoint: '/document-types', module: 'doc_types', refreshLookups: true,
@@ -56,16 +72,18 @@ export const configs = {
       { key: 'subject', label: 'ខ្លឹមសារឯកសារ', minWidth: 260 },
       { key: 'doc_date', label: 'ថ្ងៃខែឆ្នាំ', type: 'date', width: 110 },
       { key: 'document_type_name', label: 'ប្រភេទឯកសារ', width: 130 },
-      { key: 'from_unit', label: 'មកពីអង្គភាព', minWidth: 160 },
+      { key: 'from_unit_name', label: 'មកពីស្ថាប័នកងឯកភាព', minWidth: 160 },
     ],
-    filters: [{ key: 'document_type_id', label: 'ប្រភេទ', type: 'select', options: 'document_types' }, ...dateRange],
+    filters: [{ key: 'document_type_id', label: 'ប្រភេទ', type: 'select', options: 'document_types' },
+      { key: 'from_unit_id', label: 'ស្ថាប័នកងឯកភាព', type: 'unit' }, ...dateRange],
     fields: [
       { key: 'incoming_no', label: 'លេខឯកសារចូល', required: true, span: 8 },
       { key: 'doc_date', label: 'ថ្ងៃខែឆ្នាំឯកសារ', type: 'date', required: true, span: 8 },
       { key: 'received_date', label: 'ថ្ងៃទទួល', type: 'date', span: 8 },
       { key: 'subject', label: 'ខ្លឹមសារឯកសារ', type: 'textarea', required: true },
       { key: 'document_type_id', label: 'ប្រភេទឯកសារ', type: 'select', options: 'document_types', span: 12 },
-      { key: 'from_unit', label: 'មកពីអង្គភាព', span: 12 },
+      { key: 'from_unit_id', label: 'មកពីស្ថាប័នកងឯកភាព', type: 'unit', span: 12 },
+      { key: 'from_unit', label: 'ឬ មកពីស្ថាប័នក្រៅ (សរសេរជាអក្សរ)', span: 24 },
       { key: 'remarks', label: 'កំណត់សម្គាល់', type: 'textarea', rows: 2 },
     ],
   },
@@ -129,10 +147,10 @@ export const configs = {
       { key: 'decision_no', label: 'លេខលិខិត', width: 110 },
       { key: 'effective_date', label: 'ចូលជាធរមាន', type: 'date', width: 120 },
       { key: 'pension_amount', label: 'ប្រាក់សោធន', width: 110 }],
-    filters: [{ key: 'type', label: 'ប្រភេទ', type: 'select', options: [{ value: 'pension', label: 'សោធននិវត្តន៍' }, { value: 'category2', label: 'យោធិនប្រភេទ២' }] }, ...dateRange],
+    filters: [{ key: 'type', label: 'ប្រភេទ', type: 'select', options: RETIREMENT_TYPES }, ...dateRange],
     fields: [soldierField,
       { key: 'type', label: 'ប្រភេទ', type: 'select', required: true, default: 'pension', span: 12,
-        options: [{ value: 'pension', label: 'សោធននិវត្តន៍' }, { value: 'category2', label: 'យោធិនប្រភេទ២' }] },
+        options: RETIREMENT_TYPES },
       { key: 'effective_date', label: 'ថ្ងៃចូលជាធរមាន', type: 'date', required: true, span: 12 },
       { key: 'decision_no', label: 'លេខលិខិត', span: 8 },
       { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំលិខិត', type: 'date', span: 8 },

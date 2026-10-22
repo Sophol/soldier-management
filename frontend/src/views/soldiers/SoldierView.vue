@@ -69,6 +69,8 @@ const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))
             <el-descriptions-item label="ទីកន្លែងកំណើត" :span="3">{{ s.birth_village_text || s.birth_place_text }}</el-descriptions-item>
             <el-descriptions-item label="ទីលំនៅបច្ចុប្បន្ន" :span="3">{{ [s.current_address_text, s.current_village_text].filter(Boolean).join(' ') }}</el-descriptions-item>
             <el-descriptions-item label="ថ្ងៃចូលបម្រើទ័ព">{{ fmtDate(s.enlistment_date) }}</el-descriptions-item>
+            <el-descriptions-item label="បញ្ចូលក្របខ័ណ្ឌលេខ">{{ s.establishment_no }}</el-descriptions-item>
+            <el-descriptions-item label="ប្រភេទសេវា">{{ s.service_track === 'combat' ? 'ប្រតិបត្តិការសឹក' : 'សេវារដ្ឋបាល' }}</el-descriptions-item>
             <el-descriptions-item label="ថ្ងៃឡើងស័ក្តិ">{{ fmtDate(s.rank_date) }}</el-descriptions-item>
             <el-descriptions-item label="ថ្ងៃមុខតំណែង">{{ fmtDate(s.position_date) }}</el-descriptions-item>
             <el-descriptions-item label="ថ្ងៃផ្លាស់ប្ដូរកងឯកភាព">{{ fmtDate(s.unit_transfer_date) }}</el-descriptions-item>

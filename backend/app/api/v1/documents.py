@@ -9,7 +9,7 @@ from app.api.crud import crud_router
 from app.api.v1.system import get_setting
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.models import DocumentFile, DocumentIncoming, DocumentOutgoing, User
+from app.models import DocumentFile, DocumentIncoming, DocumentOutgoing, DocumentType, Unit, User
 from app.schemas import DocumentInIn, DocumentOutIn
 from app.services.common import audit, delete_storage_file, save_upload, storage_file, to_dict
 
@@ -36,8 +36,9 @@ def file_count(obj, owner_type: str) -> int:
 
 
 def doc_in_out(d: DocumentIncoming) -> dict:
+    unit = object_session(d).get(Unit, d.from_unit_id) if d.from_unit_id else None
     return {**to_dict(d), "document_type_name": d.document_type.name_kh if d.document_type else None,
-            "file_count": file_count(d, "doc_in")}
+            "from_unit_name": unit.name_kh if unit else d.from_unit, "file_count": file_count(d, "doc_in")}
 
 
 def doc_out_out(d: DocumentOutgoing) -> dict:
@@ -47,6 +48,11 @@ def doc_out_out(d: DocumentOutgoing) -> dict:
 
 def _doc_in_before(db, user, obj, data, is_new):
     data["year"] = data["doc_date"].year
+    if data.get("from_unit_id"):  # a unit of the tree; the text field stays for senders outside it
+        unit = db.get(Unit, data["from_unit_id"])
+        if not unit:
+            raise HTTPException(400, "អង្គភាពមិនត្រឹមត្រូវ")
+        data["from_unit"] = data.get("from_unit") or unit.name_kh
 
 
 def allocate_outgoing_number(db: Session, year: int) -> tuple[int, str]:
@@ -66,6 +72,27 @@ def _doc_out_before(db: Session, user, obj, data, is_new):
         data["seq"], data["outgoing_no"] = allocate_outgoing_number(db, year)
 
 
+@router.get("/documents/by-type", tags=["documents"])
+def documents_by_type(year: int | None = None, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """ឯកសារគតិយុទ្ធ: incoming and outgoing documents counted per document type."""
+    if not (user.can("doc_in", "view") or user.can("doc_out", "view")):
+        raise HTTPException(403, "គ្មានសិទ្ធិ")
+    counts = {}
+    for key, model in (("incoming", DocumentIncoming), ("outgoing", DocumentOutgoing)):
+        stmt = select(model.document_type_id, func.count(model.id)).where(model.deleted_at.is_(None))
+        if year:
+            stmt = stmt.where(model.year == year)
+        counts[key] = dict(db.execute(stmt.group_by(model.document_type_id)).all())
+    types = db.scalars(select(DocumentType).order_by(DocumentType.id)).all()
+    rows = [{"id": t.id, "name_kh": t.name_kh, "direction": t.direction, "active": t.active,
+             "incoming": counts["incoming"].get(t.id, 0), "outgoing": counts["outgoing"].get(t.id, 0)} for t in types]
+    if counts["incoming"].get(None) or counts["outgoing"].get(None):
+        rows.append({"id": None, "name_kh": "មិនបានកំណត់ប្រភេទ", "direction": "both", "active": True,
+                     "incoming": counts["incoming"].get(None, 0), "outgoing": counts["outgoing"].get(None, 0)})
+    return rows
+
+
 @router.get("/documents/outgoing/next-number", tags=["documents"])
 def next_outgoing_number(year: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     seq, number = allocate_outgoing_number(db, year)
@@ -76,6 +103,7 @@ router.include_router(crud_router(
     prefix="/documents/incoming", model=DocumentIncoming, module="doc_in", schema=DocumentInIn,
     search_fields=(DocumentIncoming.incoming_no, DocumentIncoming.subject, DocumentIncoming.from_unit),
     filter_fields={"document_type_id": DocumentIncoming.document_type_id, "year": DocumentIncoming.year,
+                   "from_unit_id": DocumentIncoming.from_unit_id,
                    "date_from": DocumentIncoming.doc_date, "date_to": DocumentIncoming.doc_date,
                    "status": DocumentIncoming.status},
     order_by=(DocumentIncoming.doc_date.desc(), DocumentIncoming.id.desc()),

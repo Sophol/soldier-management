@@ -6,6 +6,7 @@ import { useAuth } from '@/stores/auth'
 import { menu } from '@/menu'
 import { setLocale } from '@/i18n'
 import { prefs } from '@/utils/format'
+import BrandLogo from '@/components/BrandLogo.vue'
 
 const { t, locale } = useI18n()
 const auth = useAuth()
@@ -39,7 +40,7 @@ function onCommand(cmd) {
   <el-container class="layout">
     <el-aside :width="collapsed ? '64px' : '270px'" class="app-aside">
       <div class="brand" @click="router.push('/')">
-        <img src="/favicon.svg" alt="" />
+        <BrandLogo />
         <div v-if="!collapsed" class="brand-text">
           <div class="moul">{{ t('app.title') }}</div>
           <small>{{ t('app.subtitle') }}</small>

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -7,7 +7,8 @@ import { BarChart, LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import http from '@/api/http'
-import { num } from '@/utils/format'
+import { useAuth } from '@/stores/auth'
+import { fmtDateTime, num } from '@/utils/format'
 
 use([CanvasRenderer, BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent])
 
@@ -15,6 +16,23 @@ const router = useRouter()
 const data = ref(null)
 const loading = ref(true)
 const PALETTE = ['#24614b', '#c9a227', '#4f7cac', '#b5543c', '#7a6aa8', '#5c9e8f', '#9a8f6b']
+
+const auth = useAuth()
+// live activity feed (who is doing what), for roles that can read the audit log; refreshed every 30 seconds
+const activity = ref([])
+const canFollow = computed(() => auth.can('audit.view'))
+let timer = null
+async function loadActivity() {
+  activity.value = (await http.get('/dashboard/activity', { params: { limit: 15 }, silent: true })).data
+}
+onMounted(() => {
+  if (!canFollow.value) return
+  loadActivity().catch(() => {})
+  timer = setInterval(() => loadActivity().catch(() => {}), 30000)
+})
+onBeforeUnmount(() => clearInterval(timer))
+const ACTIVITY_TYPE = { create: 'success', approve: 'success', submit: 'primary', update: 'warning', return: 'warning',
+  delete: 'danger', reject: 'danger', cancel: 'danger', login: 'info' }
 
 onMounted(async () => {
   try {
@@ -63,6 +81,12 @@ const cards = computed(() => {
     { label: 'យោធិនសរុប (គ្រប់ស្ថានភាព)', value: d.total_all, icon: 'UserFilled', color: '#4f7cac', to: '/soldiers' },
     { label: 'ឯកសារចូល (ខែនេះ)', value: d.documents.incoming_month, icon: 'Download', color: '#7a6aa8', to: '/documents/incoming' },
     { label: 'ឯកសារចេញ (ខែនេះ)', value: d.documents.outgoing_month, icon: 'Upload', color: '#c9a227', to: '/documents/outgoing' },
+    { label: 'យោធិនប្រភេទ១', value: d.categories.category1, icon: 'Avatar', color: '#5c9e8f', to: '/soldiers' },
+    { label: 'យោធិនប្រភេទ២', value: d.categories.category2, icon: 'UserFilled', color: '#9a8f6b', to: '/retirement' },
+    { label: 'សំណើចូល (ឆ្នាំនេះ)', value: d.requests.incoming, icon: 'MessageBox', color: '#7a6aa8', to: '/documents/incoming' },
+    { label: 'សំណើចេញ (ឆ្នាំនេះ)', value: d.requests.outgoing, icon: 'Promotion', color: '#b5543c', to: '/documents/outgoing' },
+    { label: 'កំពុងសិក្សាក្នុងប្រទេស', value: d.studying.in_country, icon: 'Reading', color: '#4f7cac', to: '/training/long' },
+    { label: 'កំពុងសិក្សាក្រៅប្រទេស', value: d.studying.abroad, icon: 'Location', color: '#24614b', to: '/training/long' },
   ]
 })
 
@@ -76,6 +100,9 @@ const alerts = computed(() => {
     { label: 'ខ្វះរូបថត', value: a.missing_photo, type: 'danger', to: '/soldiers' },
     { label: 'ខ្វះលេខអត្តសញ្ញាណប័ណ្ណ', value: a.missing_national_id, type: 'danger', to: '/soldiers' },
     { label: 'មិនទាន់មានអង្គភាព', value: a.missing_unit, type: 'danger', to: '/soldiers' },
+    { label: 'ខ្វះថ្ងៃខែឆ្នាំកំណើត', value: a.missing_dob, type: 'danger', to: '/soldiers' },
+    { label: 'ខ្វះថ្ងៃខែឆ្នាំចូលទ័ព', value: a.missing_enlistment, type: 'danger', to: '/soldiers' },
+    { label: 'ខ្វះថ្ងៃខែឆ្នាំឡើងស័ក្តិ', value: a.missing_rank_date, type: 'danger', to: '/soldiers' },
   ]
 })
 
@@ -131,6 +158,22 @@ const pending = computed(() => {
         </el-col>
       </el-row>
 
+      <el-card v-if="canFollow" shadow="never">
+        <template #header>
+          <div class="feed-head"><span>សកម្មភាពអ្នកប្រើប្រាស់ (បច្ចុប្បន្នភាពរៀងរាល់ ៣០ វិនាទី)</span>
+            <el-button link icon="Refresh" @click="loadActivity" /></div>
+        </template>
+        <el-scrollbar max-height="300px">
+          <div v-for="a in activity" :key="a.id" class="feed-item">
+            <el-tag :type="ACTIVITY_TYPE[a.action_code] || 'info'" size="small">{{ a.action }}</el-tag>
+            <b>{{ a.user }}</b>
+            <span>{{ a.table }}<template v-if="a.what"> — {{ a.what }}</template></span>
+            <span class="muted small feed-time">{{ fmtDateTime(a.at) }}</span>
+          </div>
+          <p v-if="!activity.length" class="muted">មិនទាន់មាន</p>
+        </el-scrollbar>
+      </el-card>
+
       <el-row :gutter="14">
         <el-col :xs="24" :md="8">
           <el-card shadow="never" header="តាមថ្នាក់ឋានន្តរស័ក្តិ"><v-chart class="chart" :option="pie(data.by_rank_class)" autoresize /></el-card>
@@ -165,4 +208,7 @@ const pending = computed(() => {
 .alert-item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
 .alert-item:hover { background: #f2f6f4; }
 .chart { height: 280px; }
+.feed-head { display: flex; justify-content: space-between; align-items: center; }
+.feed-item { display: flex; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid #eef1f3; flex-wrap: wrap; }
+.feed-time { margin-left: auto; }
 </style>

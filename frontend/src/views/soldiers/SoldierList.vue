@@ -20,6 +20,7 @@ const showAdvanced = ref(false)
 const blank = {
   q: '', rank_class_id: null, rank_id: null, unit_id: null, position_id: null, status_id: null, gender: null,
   age_min: null, age_max: null, enlist_year: null, specialty_id: null, education_level_id: null, birth_province_id: null,
+  military_ids: '', section_id: null,
 }
 const f = reactive({ ...blank })
 const paging = reactive({ page: 1, size: 20, sort: 'rank', order: 'desc' })
@@ -129,12 +130,20 @@ onMounted(async () => {
               <el-input-number v-model="f.age_max" :min="0" :max="100" controls-position="right" />
             </div>
           </el-form-item></el-col>
+          <el-col :xs="24" :md="8"><el-form-item label="បញ្ជីអត្តលេខ (មួយបន្ទាត់មួយ ឬបំបែកដោយក្បៀស) — រួចចុចនាំចេញ Excel">
+            <el-input v-model="f.military_ids" type="textarea" :rows="2" placeholder="199600001&#10;199900002" />
+          </el-form-item></el-col>
           <el-col :xs="12" :md="4"><el-form-item label="ឆ្នាំចូលបម្រើទ័ព">
             <el-input-number v-model="f.enlist_year" :min="1950" :max="2100" controls-position="right" style="width: 100%" />
           </el-form-item></el-col>
           <el-col :xs="12" :md="4"><el-form-item label="ទីកន្លែងកំណើត (ខេត្ត)">
             <el-select v-model="f.birth_province_id" clearable filterable>
               <el-option v-for="p in provinces" :key="p.id" :value="p.id" :label="p.name_kh" />
+            </el-select>
+          </el-form-item></el-col>
+          <el-col :xs="12" :md="4"><el-form-item label="ផ្នែក">
+            <el-select v-model="f.section_id" clearable filterable>
+              <el-option v-for="o in lookups.list('specialty_section')" :key="o.id" :value="o.id" :label="o.name_kh" />
             </el-select>
           </el-form-item></el-col>
           <el-col :xs="12" :md="4"><el-form-item label="ជំនាញឯកទេស">

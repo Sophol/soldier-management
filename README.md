@@ -26,8 +26,8 @@ npm run dev                     # http://localhost:5173  (proxies /api to :8000)
 
 Default login: `admin` / `Admin@123`. Change it right away under **ប្ដូរពាក្យសម្ងាត់**.
 With the demo data loaded there are also `officer`, `approver`, `viewer` and `guard.officer` (scoped to បញ្ជាការដ្ឋានកងការពារ), all with password `Demo@123`.
-For the decision approval workflow there is one demo user per level: `specialist` (មន្ត្រីជំនាញ), `deputy.office`,
-`chief.office`, `deputy.director`, `director` and `leader`; `officer` registers requests and publishes signed decisions.
+For the decision approval workflow there is one demo user per role: `assistant` (ជំនួយការ — enters and submits),
+`deputy.office` (នាយរងការិយាល័យ), `chief.office` (នាយការិយាល័យ), `deputy.director` (នាយករង) and `director` (នាយក — final approval).
 The demo seed only runs on a system with no units or soldiers; never load it into production.
 API docs: http://localhost:8000/api/docs
 
@@ -76,6 +76,7 @@ frontend/src/
 
 ## Important notes
 
+- Soldier Excel import / comparison: download the template from **ការងារបញ្ចូលក្របខ័ណ្ឌយោធិនអាជីព**. The list export uses the same columns, so an exported file can be compared or imported again.
 - `member_db.sql` contains real citizen personal data. Only its `countries` and `jobs` lists are imported. Keep it out of git (it is already in `.gitignore`).
 - The **rank list is a draft**. Check names, order and "minimum years to next rank" under រចនាសម្ព័ន្ធក្របខណ្ឌ → ឋានន្តរស័ក្តិ.
 - Retirement ages (default 60 for men, 55 for women) and the outgoing document number format can be changed under ការកំណត់ → ការកំណត់ប្រព័ន្ធ.

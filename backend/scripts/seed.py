@@ -82,6 +82,19 @@ POSITIONS = [
     ("ពលទាហាន", "Soldier", 10),
 ]
 
+# draft specialty -> section (lookup code of "specialty_section")
+SPECIALTY_SECTION = {
+    "រដ្ឋបាល និងបុគ្គលិក": "admin", "ហិរញ្ញវត្ថុ": "admin", "ច្បាប់": "admin", "ភស្តុភារ": "admin",
+    "ព័ត៌មានវិទ្យា": "technical", "ទូរគមនាគមន៍": "technical", "វិស្វកម្ម": "technical",
+    "បើកបរ និងជួសជុលយានយន្ត": "technical", "ថ្មើរជើង": "operations", "ការពារ និងអន្តរាគមន៍": "operations",
+    "ចារកម្ម និងស៊ើបការណ៍": "operations", "វេជ្ជសាស្ត្រ": "health",
+}
+# draft sub-positions (មុខតំណែងរង): deputy -> head
+POSITION_PARENT = {
+    "អគ្គនាយករង": "អគ្គនាយក", "មេបញ្ជាការរង": "មេបញ្ជាការ", "អនុប្រធាននាយកដ្ឋាន": "ប្រធាននាយកដ្ឋាន",
+    "អនុប្រធានការិយាល័យ": "ប្រធានការិយាល័យ", "មេវរសេនាតូចរង": "មេវរសេនាតូច",
+}
+
 # DRAFT specialties – replace with the office's official list. (name_kh, name_en, military យោធា / civil ស៊ីវិល)
 SPECIALTIES = [
     ("រដ្ឋបាល និងបុគ្គលិក", "Administration and personnel", "civil"),
@@ -132,6 +145,13 @@ LOOKUPS = {
         ("death", "ទទួលមរណភាព", "Death"), ("desert", "រត់ចោលជួរ", "Desertion"),
         ("transfer_out", "ផ្ទេរចេញក្រៅក្រសួង", "Transferred out"),
     ],
+    # DRAFT sections (ផ្នែក) grouping the specialties – replace with the office's list
+    "specialty_section": [
+        ("admin", "ផ្នែករដ្ឋបាល និងគ្រប់គ្រង", "Administration and management"),
+        ("technical", "ផ្នែកបច្ចេកទេស", "Technical"),
+        ("operations", "ផ្នែកប្រតិបត្តិការ", "Operations"),
+        ("health", "ផ្នែកសុខាភិបាល", "Health"),
+    ],
 }
 
 DOCUMENT_TYPES = [
@@ -151,14 +171,14 @@ SETTINGS = [
 ]
 
 
-# one role per approval level of the decision workflow (answer.txt): (role, description, workflow permission)
+# the roles of the decision workflow (New.txt §12): (role, Khmer label, workflow permission)
+# ជំនួយការ enters and submits; each other role approves its own step
 WORKFLOW_ROLES = [
-    ("Specialist", "មន្ត្រីជំនាញ — ពិនិត្យលក្ខខណ្ឌ", "wf_review"),
+    ("Assistant", "ជំនួយការ", None),
     ("Deputy Chief of Office", "នាយរងការិយាល័យ", "wf_deputy_office"),
-    ("Chief of Office", "ប្រធានការិយាល័យ", "wf_chief_office"),
-    ("Deputy Director", "នាយរងនាយកដ្ឋាន", "wf_deputy_department"),
-    ("Director", "នាយកដ្ឋាន (នាយក)", "wf_director"),
-    ("Leadership", "ថ្នាក់ដឹកនាំកំពូល", "wf_leadership"),
+    ("Chief of Office", "នាយការិយាល័យ", "wf_chief_office"),
+    ("Deputy Director", "នាយករង", "wf_deputy_director"),
+    ("Director", "នាយក", "wf_director"),
 ]
 
 
@@ -174,16 +194,15 @@ def role_permission_keys(role: str) -> set[tuple[str, str]]:
         # approval steps belong only to the role of that level (and Super Admin): not to the system admin
         return {(m, a) for m in MODULES if m not in {"roles", "settings"} and not m.startswith("wf_")
                 for a in module_actions(m)}
-    if role == "Officer":  # registers requests (step 1) and publishes signed decisions (step 8)
-        return _keys(business, ["view", "create", "update", "search", "print", "export"]) | {("wf_publish", "approve")}
-    if role == "Approver":  # may also revert a published decision
+    if role in ("Officer", "Assistant"):  # enter data and requests, submit them to the workflow
+        return _keys(business, ["view", "create", "update", "search", "print", "export"])
+    if role == "Approver":  # may also revert an approved decision
         return _keys(business, ["view", "search", "print", "export"]) | {(m, "approve") for m in decisions}
     if role == "Viewer":
         return _keys(business, ["view", "search", "print"])
     for name, _, wf in WORKFLOW_ROLES:
-        if role == name:
-            base = role_permission_keys("Officer" if wf == "wf_review" else "Viewer") - {("wf_publish", "approve")}
-            return base | {(wf, "approve")}
+        if role == name and wf:
+            return role_permission_keys("Viewer") | {(wf, "approve")}
     return set()
 
 
@@ -273,6 +292,17 @@ def main(admin_password: str, source_dir: Path = PROJECT_ROOT) -> None:
         if not db.scalar(select(DocumentType.id).limit(1)):
             for kh, en in DOCUMENT_TYPES:
                 db.add(DocumentType(name_kh=kh, name_en=en))
+
+        db.flush()
+        # sections and sub-positions were added later: fill them only where still empty
+        sections = {lk.code: lk.id for lk in db.scalars(select(Lookup).where(Lookup.category == "specialty_section"))}
+        for sp in db.scalars(select(Specialty).where(Specialty.section_id.is_(None))):
+            sp.section_id = sections.get(SPECIALTY_SECTION.get(sp.name_kh))
+        positions = {p.name_kh: p for p in db.scalars(select(Position))}
+        for child, parent in POSITION_PARENT.items():
+            if child in positions and parent in positions and positions[child].parent_id is None \
+                    and not any(p.parent_id == positions[child].id for p in positions.values()):
+                positions[child].parent_id, positions[child].level = positions[parent].id, positions[parent].level + 1
 
         for key, value, desc in SETTINGS:
             if not db.get(Setting, key):

@@ -16,7 +16,8 @@ class DocumentIncoming(AuditMixin, SoftDeleteMixin, Base):
     doc_date: Mapped[date] = mapped_column(Date, index=True)
     received_date: Mapped[date | None] = mapped_column(Date)
     document_type_id: Mapped[int | None] = mapped_column(ForeignKey("document_types.id"), index=True)
-    from_unit: Mapped[str | None] = mapped_column(String(255))  # មកពីអង្គភាព
+    from_unit: Mapped[str | None] = mapped_column(String(255))  # មកពីអង្គភាព (text, e.g. another ministry)
+    from_unit_id: Mapped[int | None] = mapped_column(ForeignKey("units.id", ondelete="SET NULL"), index=True)
     status: Mapped[str] = mapped_column(String(30), default="received")
     remarks: Mapped[str | None] = mapped_column(Text)
 

@@ -38,6 +38,9 @@ class Conscript(AuditMixin, SoftDeleteMixin, Base):
     spouse_name: Mapped[str | None] = mapped_column(String(255))
     children_count: Mapped[int] = mapped_column(SmallInteger, default=0)
     education_level_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
+    specialty_id: Mapped[int | None] = mapped_column(ForeignKey("specialties.id"))
+    blood_type_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
+    spouse_job_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
     profession: Mapped[str | None] = mapped_column(String(255))  # ជំនាញ/វិជ្ជាជីវៈ
     languages: Mapped[str | None] = mapped_column(String(255))
     driving_license: Mapped[str | None] = mapped_column(String(100))  # ប័ណ្ណបើកបរ (ប្រភេទ)

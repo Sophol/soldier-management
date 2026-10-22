@@ -6,6 +6,7 @@
  */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
 import http from '@/api/http'
 import { useAuth } from '@/stores/auth'
 import { useLookups } from '@/stores/lookups'
@@ -25,6 +26,12 @@ const total = ref(0)
 const loading = ref(false)
 const query = reactive({ page: 1, size: 20, q: '' })
 const filters = reactive({})
+// filters can come from the URL (e.g. /documents/incoming?document_type_id=3), so other pages can link here
+const route = useRoute()
+for (const f of props.config.filters || []) {
+  const v = route.query[f.key]
+  if (v != null && v !== '') filters[f.key] = /^\d+$/.test(v) ? Number(v) : v
+}
 
 const dialog = ref(false)
 const saving = ref(false)

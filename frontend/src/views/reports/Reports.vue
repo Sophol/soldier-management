@@ -24,6 +24,7 @@ const usesDates = computed(() => ['movements', 'decisions', 'training', 'discipl
 const kindOptions = computed(() => ({
   decisions: [{ value: 'appoint', label: 'តែងតាំង' }, { value: 'transfer', label: 'ផ្លាស់ប្ដូរ' }, { value: 'promote', label: 'ដំឡើងស័ក្តិ' }],
   training: [{ value: 'long', label: 'រយៈពេលវែង' }, { value: 'short', label: 'រយៈពេលខ្លី' }],
+  retirement: [{ value: 'pension', label: 'សោធននិវត្តន៍' }, { value: 'voluntary', label: 'ស្ម័គ្រចិត្ត' }, { value: 'category2', label: 'យោធិនប្រភេទ២' }],
 })[f.key] || null)
 
 function params() {

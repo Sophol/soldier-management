@@ -14,6 +14,7 @@ class TrainingCourse(AuditMixin, SoftDeleteMixin, Base):
     name: Mapped[str] = mapped_column(String(255))
     course_type: Mapped[str] = mapped_column(String(20), index=True)  # long / short
     level: Mapped[str] = mapped_column(String(20), default="basic")  # basic បណ្ដុះបណ្ដាល / refresher បំប៉ន
+    sector: Mapped[str] = mapped_column(String(10), default="military")  # military យោធា / civil ស៊ីវិល
     specialty_id: Mapped[int | None] = mapped_column(ForeignKey("specialties.id"))
     institution: Mapped[str | None] = mapped_column(String(255))
     country_id: Mapped[int | None] = mapped_column(ForeignKey("countries.id"))
@@ -67,7 +68,7 @@ class RetirementRecord(AuditMixin, SoftDeleteMixin, Base):
     __tablename__ = "retirement_records"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
-    type: Mapped[str] = mapped_column(String(20))  # pension / category2
+    type: Mapped[str] = mapped_column(String(20))  # pension / voluntary (ស្ម័គ្រចិត្ត) / category2
     decision_no: Mapped[str | None] = mapped_column(String(100))
     decision_date: Mapped[date | None] = mapped_column(Date)
     effective_date: Mapped[date] = mapped_column(Date)

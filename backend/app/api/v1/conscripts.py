@@ -18,13 +18,14 @@ from app.models import (
     Lookup,
     Province,
     Rank,
+    Specialty,
     Unit,
     User,
 )
 from app.models.conscript import EXEMPTION_REASONS, MEDICAL_RESULTS, REGISTRATION_STATUSES
 from app.schemas import ConscriptIn, ConscriptMedicalIn, ConscriptRegistrationIn, ConscriptServiceIn
-from app.services.common import audit, delete_storage_file, paginate, save_upload, storage_file, to_dict
-from app.services.soldier import age
+from app.services.common import audit, delete_storage_file, paginate, save_upload, storage_file, to_dict, unit_subtree_ids
+from app.services.soldier import age, years_ago
 
 router = APIRouter()
 
@@ -44,9 +45,22 @@ def _latest_registration(db: Session, conscript_id: int) -> ConscriptRegistratio
         .order_by(ConscriptRegistration.registration_year.desc(), ConscriptRegistration.id.desc()).limit(1))
 
 
+def _latest_service(db: Session, conscript_id: int) -> ConscriptService | None:
+    return db.scalar(select(ConscriptService).where(
+        ConscriptService.conscript_id == conscript_id, ConscriptService.deleted_at.is_(None))
+        .order_by(ConscriptService.start_date.desc(), ConscriptService.id.desc()).limit(1))
+
+
 def conscript_out(db: Session, c: Conscript) -> dict:
     reg = _latest_registration(db, c.id)
+    sv = _latest_service(db, c.id)
+    name = lambda model, i: db.get(model, i).name_kh if i else None  # noqa: E731
     return {**to_dict(c), "age": age(c.date_of_birth),
+            # current service (ឋានន្តរស័ក្តិ, មុខតំណែង/តួនាទី, អង្គភាព, ថ្ងៃខែឆ្នាំចូលបំពេញកាតព្វកិច្ច)
+            "rank_name": sv.rank.name_kh if sv and sv.rank else None, "role": sv.role if sv else None,
+            "unit_name": (sv.unit.name_kh if sv.unit else sv.unit_text) if sv else None,
+            "service_start": sv.start_date.isoformat() if sv and sv.start_date else None,
+            "specialty_name": name(Specialty, c.specialty_id), "blood_type_name": name(Lookup, c.blood_type_id),
             "status": reg.status if reg else None,
             "status_name": REGISTRATION_STATUSES.get(reg.status) if reg else None,
             "registration_year": reg.registration_year if reg else None,
@@ -65,7 +79,10 @@ def _get_conscript(db: Session, conscript_id: int) -> Conscript:
 @router.get("/conscripts", tags=["conscripts"])
 def list_conscripts(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500), q: str | None = None,
                     gender: str | None = None, status: str | None = None, registration_year: int | None = None,
-                    province_id: int | None = None, db: Session = Depends(get_db),
+                    province_id: int | None = None, education_level_id: int | None = None,
+                    specialty_id: int | None = None, section_id: int | None = None, blood_type_id: int | None = None,
+                    marital_status_id: int | None = None, rank_id: int | None = None, unit_id: int | None = None,
+                    age_min: int | None = None, age_max: int | None = None, db: Session = Depends(get_db),
                     _: User = Depends(require("conscripts", "view"))):
     """Filters on status / year / province look at the person's registrations."""
     stmt = select(Conscript).where(Conscript.deleted_at.is_(None))
@@ -76,6 +93,23 @@ def list_conscripts(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=5
                               Conscript.phone.ilike(like)))
     if gender:
         stmt = stmt.where(Conscript.gender == gender)
+    for col, val in ((Conscript.education_level_id, education_level_id), (Conscript.specialty_id, specialty_id),
+                     (Conscript.blood_type_id, blood_type_id), (Conscript.marital_status_id, marital_status_id)):
+        if val:
+            stmt = stmt.where(col == val)
+    if section_id:
+        stmt = stmt.where(Conscript.specialty_id.in_(select(Specialty.id).where(Specialty.section_id == section_id)))
+    if age_min is not None:
+        stmt = stmt.where(Conscript.date_of_birth <= years_ago(age_min))
+    if age_max is not None:
+        stmt = stmt.where(Conscript.date_of_birth > years_ago(age_max + 1))
+    if rank_id or unit_id:  # by any service period (the unit filter includes sub-units)
+        sv = select(ConscriptService.conscript_id).where(ConscriptService.deleted_at.is_(None))
+        if rank_id:
+            sv = sv.where(ConscriptService.rank_id == rank_id)
+        if unit_id:
+            sv = sv.where(ConscriptService.unit_id.in_(unit_subtree_ids(db, unit_id)))
+        stmt = stmt.where(Conscript.id.in_(sv))
     if status or registration_year or province_id:
         reg = select(ConscriptRegistration.conscript_id).where(ConscriptRegistration.deleted_at.is_(None))
         if status:

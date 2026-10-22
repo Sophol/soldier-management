@@ -22,14 +22,11 @@ MODULES: dict[str, str] = {
     "retirement": "សោធននិវត្តន៍ និងយោធិនប្រភេទ២",
     "separation": "យោធិនចេញពីជួរ",
     "reports": "របាយការណ៍",
-    # approval workflow: each level of the decision workflow is its own permission (action "approve" only)
-    "wf_review": "លំហូរអនុម័ត ២. មន្ត្រីជំនាញពិនិត្យលក្ខខណ្ឌ",
-    "wf_deputy_office": "លំហូរអនុម័ត ៣. នាយរងការិយាល័យ",
-    "wf_chief_office": "លំហូរអនុម័ត ៤. ប្រធានការិយាល័យ",
-    "wf_deputy_department": "លំហូរអនុម័ត ៥. នាយរងនាយកដ្ឋាន",
-    "wf_director": "លំហូរអនុម័ត ៦. នាយកដ្ឋាន (នាយក)",
-    "wf_leadership": "លំហូរអនុម័ត ៧. ថ្នាក់ដឹកនាំកំពូល",
-    "wf_publish": "លំហូរអនុម័ត ៨. ចេញលិខិត និងផ្សព្វផ្សាយ",
+    # approval workflow (New.txt §12): each level is its own permission (action "approve" only)
+    "wf_deputy_office": "លំហូរអនុម័ត ២. នាយរងការិយាល័យ (ទទួលទិស)",
+    "wf_chief_office": "លំហូរអនុម័ត ៣. នាយការិយាល័យ",
+    "wf_deputy_director": "លំហូរអនុម័ត ៤. នាយករង (បូកសរុប)",
+    "wf_director": "លំហូរអនុម័ត ៥. នាយក (អនុម័ត)",
     "conscripts": "យុវជនបំពេញកាតព្វកិច្ចយោធា",
     "conscript_medical": "ការពិនិត្យសុខភាពយុវជនកាតព្វកិច្ច",
     "users": "អ្នកប្រើប្រាស់",
@@ -53,22 +50,30 @@ def module_actions(module: str) -> list[str]:
     return MODULE_ACTIONS.get(module, ACTIONS)
 
 
-# decision workflow (answer.txt): status = the step the decision is waiting at
-WORKFLOW_STAGES: dict[str, str] = {  # status -> label; each needs permission wf_<status>.approve
-    "review": "ពិនិត្យលក្ខខណ្ឌ (មន្ត្រីជំនាញ)",
-    "deputy_office": "រង់ចាំនាយរងការិយាល័យ",
-    "chief_office": "រង់ចាំប្រធានការិយាល័យ",
-    "deputy_department": "រង់ចាំនាយរងនាយកដ្ឋាន",
-    "director": "រង់ចាំនាយកដ្ឋាន",
-    "leadership": "រង់ចាំថ្នាក់ដឹកនាំកំពូល",
+# decision workflow (New.txt §12): ជំនួយការ enters and submits -> នាយរងការិយាល័យ receives it (ទទួលទិស) ->
+# នាយការិយាល័យ -> នាយករង consolidates (បូកសរុប) -> submitted to នាយក (កំពុងដាក់សំណើ) -> approved (អនុម័ត).
+# The status is the step the decision is waiting at; soldier records change when the នាយក approves.
+WORKFLOW_STAGES: dict[str, str] = {  # status -> label
+    "deputy_office": "រង់ចាំនាយរងការិយាល័យ (ទទួលទិស)",
+    "chief_office": "រង់ចាំនាយការិយាល័យ",
+    "deputy_director": "រង់ចាំនាយករង (បូកសរុប)",
+    "submitted": "កំពុងដាក់សំណើ (រង់ចាំនាយក)",
+}
+STAGE_PERMISSION: dict[str, str] = {  # status -> module whose "approve" lets a user act at that step
+    "deputy_office": "wf_deputy_office",
+    "chief_office": "wf_chief_office",
+    "deputy_director": "wf_deputy_director",
+    "submitted": "wf_director",
 }
 DECISION_STATUSES: dict[str, str] = {
     "draft": "ព្រាង",
     **WORKFLOW_STAGES,
-    "approved": "បានអនុម័ត (រង់ចាំចេញលិខិត)",
-    "published": "បានផ្សព្វផ្សាយ",
+    "approved": "បានអនុម័ត",
     "rejected": "បានបដិសេធ",
     "cancelled": "បានលុបចោល",
 }
-FLOW = ["draft", *WORKFLOW_STAGES, "approved", "published"]  # forward order
+# statuses of the earlier 8-step workflow, still found in approval logs
+LEGACY_STATUSES = {"review": "ពិនិត្យលក្ខខណ្ឌ (មន្ត្រីជំនាញ)", "deputy_department": "រង់ចាំនាយរងនាយកដ្ឋាន",
+                   "director": "រង់ចាំនាយកដ្ឋាន", "leadership": "រង់ចាំថ្នាក់ដឹកនាំកំពូល", "published": "បានផ្សព្វផ្សាយ"}
+FLOW = ["draft", *WORKFLOW_STAGES, "approved"]  # forward order
 DECISION_MODULE = {"appoint": "decisions_appoint", "transfer": "decisions_transfer", "promote": "decisions_promote"}

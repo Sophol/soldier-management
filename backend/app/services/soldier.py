@@ -25,6 +25,15 @@ def ym_text(ym: tuple[int, int] | None) -> str | None:
     return f"{y} ឆ្នាំ {m} ខែ"
 
 
+def years_ago(years: int) -> date:
+    """Today, `years` years ago (29 February falls back to the 28th)."""
+    t = date.today()
+    try:
+        return t.replace(year=t.year - years)
+    except ValueError:
+        return t.replace(year=t.year - years, day=28)
+
+
 def age(dob: date | None) -> int | None:
     ym = diff_ym(dob)
     return ym[0] if ym else None
@@ -82,6 +91,16 @@ def soldier_summary(s: Soldier) -> dict:
 
 def status_id_by_code(db: Session, code: str) -> int | None:
     return db.scalar(select(Lookup.id).where(Lookup.category == "soldier_status", Lookup.code == code))
+
+
+def years_to_next_rank(s: Soldier) -> int | None:
+    """Minimum years in the current rank before promotion, for the soldier's service track
+    (combat operations use the rank's combat value when it is set)."""
+    if not s.rank:
+        return None
+    if s.service_track == "combat" and s.rank.min_years_combat is not None:
+        return s.rank.min_years_combat
+    return s.rank.min_years_to_next
 
 
 # statuses of soldiers who have left the strength (retirement, category 2, separation)

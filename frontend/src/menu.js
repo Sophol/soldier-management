@@ -1,4 +1,4 @@
-/** Sidebar menu (plan.txt §3). `perm` hides items the user cannot view. */
+/** Sidebar menu, ordered as in New.txt. `perm` hides items the user cannot view. */
 export const menu = [
   { key: 'dashboard', icon: 'Odometer', to: '/', perm: 'dashboard.view' },
   {
@@ -8,20 +8,30 @@ export const menu = [
       { key: 'positions', to: '/org/positions', perm: 'positions.view' },
       { key: 'staffing', to: '/org/staffing', perm: 'positions.view' },
       { key: 'specialties', to: '/org/specialties', perm: 'specialties.view' },
+      { key: 'sections', to: '/settings/lookups?category=specialty_section', perm: 'lookups.view' },
+      { key: 'educationLevels', to: '/settings/lookups?category=education_level', perm: 'lookups.view' },
+      { key: 'geography', to: '/settings/geography', perm: 'geography.view' },
+      { key: 'legalDocs', to: '/documents/legal', perm: ['doc_in.view', 'doc_out.view'] },
       { key: 'docTypes', to: '/org/document-types', perm: 'doc_types.view' },
     ],
   },
   {
-    key: 'documents', icon: 'Document', children: [
-      { key: 'docIn', to: '/documents/incoming', perm: 'doc_in.view' },
+    key: 'archives', icon: 'Document', children: [
       { key: 'docOut', to: '/documents/outgoing', perm: 'doc_out.view' },
+      { key: 'docIn', to: '/documents/incoming', perm: 'doc_in.view' },
+    ],
+  },
+  {
+    key: 'recruitment', icon: 'Flag', children: [
+      { key: 'soldierIntake', to: '/soldiers/import', perm: 'soldiers.create' },
+      { key: 'conscripts', to: '/conscripts', perm: 'conscripts.view' },
     ],
   },
   {
     key: 'soldiers', icon: 'User', children: [
       { key: 'soldierList', to: '/soldiers', perm: 'soldiers.view' },
-      { key: 'soldierNew', to: '/soldiers/new', perm: 'soldiers.create' },
-      { key: 'strength', to: '/strength', perm: 'strength.view' },
+      { key: 'unitTransfers', to: '/strength', perm: 'strength.view' },
+      { key: 'compare', to: '/soldiers/compare', perm: 'soldiers.view' },
     ],
   },
   {
@@ -39,21 +49,15 @@ export const menu = [
       { key: 'shortCourses', to: '/training/short', perm: 'training.view' },
     ],
   },
-  { key: 'discipline', icon: 'Warning', to: '/discipline', perm: 'discipline.view' },
   { key: 'awards', icon: 'Trophy', to: '/awards', perm: 'awards.view' },
+  { key: 'discipline', icon: 'Warning', to: '/discipline', perm: 'discipline.view' },
   { key: 'retirement', icon: 'Calendar', to: '/retirement', perm: 'retirement.view' },
   { key: 'separation', icon: 'Remove', to: '/separation', perm: 'separation.view' },
-  {
-    key: 'recruitment', icon: 'Flag', children: [
-      { key: 'conscripts', to: '/conscripts', perm: 'conscripts.view' },
-    ],
-  },
   { key: 'reports', icon: 'DataAnalysis', to: '/reports', perm: 'reports.view' },
   {
     key: 'settings', icon: 'Setting', children: [
       { key: 'users', to: '/settings/users', perm: 'users.view' },
       { key: 'roles', to: '/settings/roles', perm: 'roles.view' },
-      { key: 'geography', to: '/settings/geography', perm: 'geography.view' },
       { key: 'lookups', to: '/settings/lookups', perm: 'lookups.view' },
       { key: 'countries', to: '/settings/countries', perm: 'lookups.view' },
       { key: 'system', to: '/settings/system', perm: 'settings.view' },

@@ -1,12 +1,10 @@
 """Soldier records (គ្រប់គ្រងយោធិន): CRUD, search, photo, attachments, history, full profile."""
 
+import re
 from datetime import date, datetime
-from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from openpyxl import Workbook
-from openpyxl.styles import Font
 from sqlalchemy import Select, extract, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -36,6 +34,7 @@ from app.models import (
 )
 from app.models.geo import Commune
 from app.schemas import SoldierIn
+from app.services import soldier_io
 from app.services.common import (
     audit,
     check_unit_in_scope,
@@ -48,7 +47,17 @@ from app.services.common import (
     to_dict,
     unit_subtree_ids,
 )
-from app.services.soldier import add_history, add_movement, age, diff_ym, is_inactive, soldier_summary, ym_text
+from app.services.soldier import (
+    add_history,
+    add_movement,
+    age,
+    diff_ym,
+    is_inactive,
+    soldier_summary,
+    status_id_by_code,
+    years_ago,
+    ym_text,
+)
 
 router = APIRouter(prefix="/soldiers", tags=["soldiers"])
 
@@ -62,18 +71,10 @@ SORTS = {
 }
 
 
-def _years_ago(years: int) -> date:
-    t = date.today()
-    try:
-        return t.replace(year=t.year - years)
-    except ValueError:  # 29 Feb
-        return t.replace(year=t.year - years, day=28)
-
-
 def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=None, unit_id=None,
                 position_id=None, status_id=None, gender=None, age_min=None, age_max=None,
                 enlist_year=None, specialty_id=None, birth_province_id=None, education_level_id=None,
-                sort="rank", order="desc") -> Select:
+                military_ids=None, section_id=None, sort="rank", order="desc") -> Select:
     stmt = select(Soldier).where(Soldier.deleted_at.is_(None))
     scope = scope_unit_ids(db, user)
     if scope is not None:
@@ -83,6 +84,10 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
         stmt = stmt.where(or_(Soldier.name_kh.ilike(like), Soldier.name_latin.ilike(like),
                               Soldier.military_id.ilike(like), Soldier.national_id.ilike(like),
                               Soldier.phone.ilike(like)))
+    if military_ids:
+        # a pasted list of military IDs (one per line, or separated by commas/spaces)
+        ids = [x for x in re.split(r"[\s,;]+", military_ids) if x]
+        stmt = stmt.where(Soldier.military_id.in_(ids[:2000]))
     if rank_id:
         stmt = stmt.where(Soldier.current_rank_id == rank_id)
     if rank_class_id:
@@ -96,13 +101,15 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
     if gender:
         stmt = stmt.where(Soldier.gender == gender)
     if age_min is not None:
-        stmt = stmt.where(Soldier.date_of_birth <= _years_ago(age_min))
+        stmt = stmt.where(Soldier.date_of_birth <= years_ago(age_min))
     if age_max is not None:
-        stmt = stmt.where(Soldier.date_of_birth > _years_ago(age_max + 1))
+        stmt = stmt.where(Soldier.date_of_birth > years_ago(age_max + 1))
     if enlist_year:
         stmt = stmt.where(extract("year", Soldier.enlistment_date) == enlist_year)
     if specialty_id:
         stmt = stmt.where(Soldier.specialty_id == specialty_id)
+    if section_id:  # ផ្នែក: every specialty of the section
+        stmt = stmt.where(Soldier.specialty_id.in_(select(Specialty.id).where(Specialty.section_id == section_id)))
     if education_level_id:
         stmt = stmt.where(Soldier.education_level_id == education_level_id)
     if birth_province_id:
@@ -123,7 +130,8 @@ def _filters(
     unit_id: int | None = None, position_id: int | None = None, status_id: int | None = None,
     gender: str | None = None, age_min: int | None = None, age_max: int | None = None,
     enlist_year: int | None = None, specialty_id: int | None = None, birth_province_id: int | None = None,
-    education_level_id: int | None = None, sort: str = "rank", order: str = "desc",
+    education_level_id: int | None = None, military_ids: str | None = None, section_id: int | None = None,
+    sort: str = "rank", order: str = "desc",
 ) -> dict:
     return {k: v for k, v in locals().items()}
 
@@ -155,32 +163,99 @@ def list_soldiers(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500
     return {"items": [soldier_summary(s) for s in items], "total": total, "page": page, "size": size}
 
 
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx(buf, name: str) -> StreamingResponse:
+    return StreamingResponse(buf, media_type=XLSX, headers={"Content-Disposition": f"attachment; filename={name}"})
+
+
 @router.get("/export")
 def export_soldiers(f: dict = Depends(_filters), db: Session = Depends(get_db),
                     user: User = Depends(require("soldiers", "export"))):
+    """Same columns as the import template (so it can be imported or compared again), plus computed ones."""
     rows = db.scalars(build_query(db, user, **f)).unique().all()
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "យោធិន"
-    headers = ["ល.រ", "អត្តលេខ", "ឋានន្តរស័ក្តិ", "គោត្តនាមនិងនាម", "ឈ្មោះឡាតាំង", "ភេទ", "ថ្ងៃខែឆ្នាំកំណើត", "អាយុ",
-               "មុខតំណែង", "ថ្ងៃខែឆ្នាំមុខតំណែង", "រយៈពេលមុខតំណែង", "អង្គភាព", "ចំណុះស្ថាប័នកងឯកភាព",
-               "ថ្ងៃចូលបម្រើទ័ព", "រយៈពេលបម្រើការងារ", "ថ្ងៃឡើងស័ក្តិ", "រយៈពេលឡើងស័ក្តិ", "ស្ថានភាព", "ទូរសព្ទ"]
-    ws.append(headers)
-    for c in ws[1]:
-        c.font = Font(bold=True)
-    for i, s in enumerate(rows, start=1):
-        d = soldier_summary(s)
-        ws.append([i, d["military_id"], d["rank_name"], d["name_kh"], d["name_latin"],
-                   "ប្រុស" if d["gender"] == "M" else "ស្រី", d["date_of_birth"], d["age"], d["position_name"],
-                   d["position_date"], d["time_in_position"], d["unit_path"], d["institution_name"],
-                   d["enlistment_date"], d["service_length"], d["rank_date"], d["time_in_rank"], d["status_name"], d["phone"]])
-    for col in ws.columns:
-        ws.column_dimensions[col[0].column_letter].width = 18
-    buf = BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                             headers={"Content-Disposition": "attachment; filename=soldiers.xlsx"})
+    return _xlsx(soldier_io.export(db, rows, soldier_summary), "soldiers.xlsx")
+
+
+# ---------------- Excel import (ការងារបញ្ចូលក្របខ័ណ្ឌយោធិនអាជីព) & comparison (ការប្រៀបធៀប) ----------------
+
+@router.get("/import/fields")
+def import_fields(_: User = Depends(require("soldiers", "view"))):
+    """The Excel columns (for the comparison's field picker)."""
+    return [{"key": f.key, "label": f.label, "required": f.required} for f in soldier_io.FIELDS]
+
+
+@router.get("/import/template")
+def import_template(db: Session = Depends(get_db), _: User = Depends(require("soldiers", "create"))):
+    return _xlsx(soldier_io.template(db), "soldier-import-template.xlsx")
+
+
+@router.post("/import")
+def import_soldiers(request: Request, file: UploadFile = File(...), dry_run: bool = Form(True),
+                    update_existing: bool = Form(False), db: Session = Depends(get_db),
+                    user: User = Depends(require("soldiers", "create"))):
+    """dry_run (default): check every row and report what would happen. Otherwise create/update the valid rows;
+    rows with errors are skipped and listed."""
+    if update_existing and not user.can("soldiers", "update"):
+        raise HTTPException(403, "គ្មានសិទ្ធិកែប្រែយោធិនដែលមានស្រាប់")
+    fields, data, unknown = soldier_io.read_sheet(file.file.read())
+    rows = soldier_io.plan_import(db, soldier_io.parse_rows(db, data, fields), update_existing, scope_unit_ids(db, user))
+    if not dry_run:
+        active = status_id_by_code(db, "active")
+        for r in rows:
+            if r["action"] == "error":
+                continue
+            try:
+                with db.begin_nested():  # one bad row must not undo the others
+                    _import_row(db, user, r, active)
+            except IntegrityError as e:
+                r["action"], r["errors"] = "error", [_integrity_message(e)]
+        audit(db, user, "import", table="soldiers", record_id="*", request=request,
+              before={"file": file.filename, "created": sum(r["action"] == "create" for r in rows)})
+        db.commit()
+    return {**soldier_io.import_summary(rows), "dry_run": dry_run,
+            "columns": [f.label for f in fields], "unknown_columns": unknown}
+
+
+def _import_row(db: Session, user: User, r: dict, active_status: int | None) -> None:
+    values = r["values"]
+    if r["action"] == "create":
+        s = Soldier(**values, created_by=user.id)
+        s.status_id = s.status_id or active_status
+        db.add(s)
+        db.flush()
+        record_new(db, s)
+        r["soldier_id"] = s.id
+    else:
+        s = db.get(Soldier, r["soldier_id"])
+        old = (s.current_rank_id, s.current_position_id, s.current_unit_id)
+        old_unit_date = s.unit_transfer_date
+        for k, v in values.items():  # empty cells leave the current value
+            setattr(s, k, v)
+        s.updated_by = user.id
+        db.flush()
+        record_edit(db, s, old, old_unit_date, "កែប្រែតាមការនាំចូល Excel")
+
+
+@router.post("/compare")
+def compare_soldiers(file: UploadFile = File(...), fields: str | None = Form(None), unit_id: int | None = Form(None),
+                     format: str = Form("json"), db: Session = Depends(get_db),
+                     user: User = Depends(require("soldiers", "view"))):
+    """Compare an Excel list with the soldier list on the chosen fields (default: every column in the file).
+    Soldiers of `unit_id` (and its sub-units) that are missing from the file are listed too."""
+    file_fields, data, _ = soldier_io.read_sheet(file.file.read())
+    wanted = [soldier_io.BY_KEY[k] for k in (fields or "").split(",") if k in soldier_io.BY_KEY]
+    chosen = [f for f in (wanted or file_fields) if f in file_fields and f.key != "military_id"]
+    expected = db.scalars(build_query(db, user, unit_id=unit_id)).unique().all() if unit_id else []
+    result = soldier_io.compare(db, data, chosen, expected)
+    scope = scope_unit_ids(db, user)
+    if scope is not None:  # never reveal soldiers outside the user's units
+        visible = set(db.scalars(select(Soldier.id).where(Soldier.current_unit_id.in_(scope))))
+        result["rows"] = [x for x in result["rows"] if not x.get("soldier_id") or x["soldier_id"] in visible]
+    if format == "xlsx":
+        return _xlsx(soldier_io.compare_workbook(result), "compare.xlsx")
+    return result
 
 
 @router.get("/{soldier_id}")
@@ -208,6 +283,31 @@ def _integrity_message(e: IntegrityError) -> str:
     return f"ទិន្នន័យមិនត្រឹមត្រូវ: {msg}"
 
 
+def record_new(db: Session, s: Soldier) -> None:
+    """A soldier entered for the first time: initial history row and, with a unit, the 'joined' movement."""
+    add_history(db, s, "initial", s.rank_date or s.enlistment_date, new_rank=s.current_rank_id,
+                new_position=s.current_position_id, new_unit=s.current_unit_id, note="ទិន្នន័យដំបូង")
+    if s.current_unit_id:
+        add_movement(db, s.id, s.current_unit_id, "in", "recruit",
+                     s.unit_transfer_date or s.enlistment_date or date.today(), "soldiers", s.id)
+
+
+def record_edit(db: Session, s: Soldier, old: tuple, old_unit_date: date | None, note: str) -> None:
+    """Rank/position/unit changed outside of a decision (profile edit, Excel import): a correction in the history,
+    and a unit change moves the soldier between unit strengths like a transfer decision."""
+    new = (s.current_rank_id, s.current_position_id, s.current_unit_id)
+    if old != new:
+        add_history(db, s, "correction", date.today(), old_rank=old[0], new_rank=new[0],
+                    old_position=old[1], new_position=new[1], old_unit=old[2], new_unit=new[2], note=note)
+    if old[2] != new[2] and not is_inactive(db, s):
+        moved = (s.unit_transfer_date if s.unit_transfer_date != old_unit_date else None) or date.today()
+        if old[2]:
+            add_movement(db, s.id, old[2], "out", "transfer_out", moved, "soldiers", s.id, note=note)
+        if new[2]:
+            add_movement(db, s.id, new[2], "in", "transfer_in" if old[2] else "recruit", moved, "soldiers", s.id,
+                         note=note)
+
+
 @router.post("", status_code=201)
 def create_soldier(payload: SoldierIn, request: Request, db: Session = Depends(get_db),
                    user: User = Depends(require("soldiers", "create"))):
@@ -218,11 +318,7 @@ def create_soldier(payload: SoldierIn, request: Request, db: Session = Depends(g
     db.add(s)
     try:
         db.flush()
-        add_history(db, s, "initial", s.rank_date or s.enlistment_date, new_rank=s.current_rank_id,
-                    new_position=s.current_position_id, new_unit=s.current_unit_id, note="ទិន្នន័យដំបូង")
-        if s.current_unit_id:
-            add_movement(db, s.id, s.current_unit_id, "in", "recruit",
-                         s.unit_transfer_date or s.enlistment_date or date.today(), "soldiers", s.id)
+        record_new(db, s)
         audit(db, user, "create", s, request=request)
         db.commit()
     except IntegrityError as e:
@@ -242,22 +338,8 @@ def update_soldier(soldier_id: int, payload: SoldierIn, request: Request, db: Se
     old_unit_date = s.unit_transfer_date
     _apply(s, payload)
     s.updated_by = user.id
-    new = (s.current_rank_id, s.current_position_id, s.current_unit_id)
     try:
-        if old != new:
-            # direct edit outside of a decision: record as a correction so history stays complete
-            add_history(db, s, "correction", date.today(), old_rank=old[0], new_rank=new[0],
-                        old_position=old[1], new_position=new[1], old_unit=old[2], new_unit=new[2],
-                        note="កែតម្រូវដោយផ្ទាល់ពីប្រវត្តិរូប")
-        if old[2] != new[2] and not is_inactive(db, s):
-            # a unit change from the profile moves the soldier between unit strengths, like a transfer decision
-            moved = s.unit_transfer_date if s.unit_transfer_date != old_unit_date else None
-            moved = moved or date.today()
-            if old[2]:
-                add_movement(db, s.id, old[2], "out", "transfer_out", moved, "soldiers", s.id, note="កែប្រែពីប្រវត្តិរូប")
-            if new[2]:
-                add_movement(db, s.id, new[2], "in", "transfer_in" if old[2] else "recruit", moved, "soldiers", s.id,
-                             note="កែប្រែពីប្រវត្តិរូប")
+        record_edit(db, s, old, old_unit_date, "កែតម្រូវដោយផ្ទាល់ពីប្រវត្តិរូប")
         db.flush()
         audit(db, user, "update", s, before=before, request=request)
         db.commit()

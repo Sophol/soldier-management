@@ -8,22 +8,25 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
-from sqlalchemy import extract, func, literal_column, select
+from sqlalchemy import extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.conscripts import registration_counts
-from app.api.v1.decisions import IN_PROGRESS, overdue_cutoff
-from app.api.v1.records import MOVEMENT_REASONS
+from app.api.v1.decisions import IN_PROGRESS, can_act_at, overdue_cutoff
+from app.api.v1.records import MOVEMENT_REASONS, RETIREMENT_TYPES
 from app.api.v1.system import get_setting
 from app.core.database import get_db
 from app.core.deps import require
 from app.models import (
+    AuditLog,
     AwardRecord,
     Country,
     Decision,
     DisciplineRecord,
     DocumentIncoming,
     DocumentOutgoing,
+    DocumentType,
+    Lookup,
     Position,
     Province,
     Rank,
@@ -40,7 +43,7 @@ from app.models import (
 from app.models.conscript import REGISTRATION_STATUSES
 from app.models.decision import DECISION_KINDS
 from app.services.common import scope_unit_ids, unit_subtree_ids
-from app.services.soldier import age, diff_ym, soldier_summary, ym_text
+from app.services.soldier import age, diff_ym, soldier_summary, years_to_next_rank, ym_text
 from app.services.staffing import serving
 
 router = APIRouter(tags=["reports"])
@@ -67,11 +70,13 @@ def _add_years(d: date, years: int) -> date:
 
 
 def promotion_due(db: Session, user: User, unit_id: int | None = None) -> list[Soldier]:
+    """Soldiers whose time in rank reached the minimum for their service track (administrative / combat)."""
     stmt = active_soldiers(db, user, unit_id).join(Rank, Rank.id == Soldier.current_rank_id).where(
-        Rank.min_years_to_next.is_not(None), Soldier.rank_date.is_not(None),
-        Soldier.rank_date <= func.date_sub(func.curdate(), literal_column("INTERVAL ranks.min_years_to_next YEAR")),
+        or_(Rank.min_years_to_next.is_not(None), Rank.min_years_combat.is_not(None)), Soldier.rank_date.is_not(None),
     ).order_by(Rank.sort_order.desc(), Soldier.rank_date)
-    return list(db.scalars(stmt).unique())
+    today = date.today()
+    return [s for s in db.scalars(stmt).unique()
+            if years_to_next_rank(s) is not None and s.rank_date <= _add_years(today, -years_to_next_rank(s))]
 
 
 def retirement_age(s: Soldier, by_gender: dict[str, int]) -> int:
@@ -128,7 +133,7 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
     pending = defaultdict(int)
     for k, _, _ in in_workflow:
         pending[k] += 1
-    mine = {st for st in IN_PROGRESS if user.can("wf_publish" if st == "approved" else f"wf_{st}", "approve")}
+    mine = {st for st in IN_PROGRESS if can_act_at(user, st)}
     cutoff = overdue_cutoff(db)
     waiting_for_me = sum(1 for _, st, _ in in_workflow if st in mine)
     overdue = sum(1 for _, _, changed in in_workflow if changed and changed < cutoff)
@@ -176,8 +181,82 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
             "missing_photo": sum(1 for s in soldiers if not s.photo_path),
             "missing_national_id": sum(1 for s in soldiers if not s.national_id),
             "missing_unit": sum(1 for s in soldiers if not s.current_unit_id),
+            "missing_dob": sum(1 for s in soldiers if not s.date_of_birth),
+            "missing_enlistment": sum(1 for s in soldiers if not s.enlistment_date),
+            "missing_rank_date": sum(1 for s in soldiers if not s.rank_date),
         },
+        # យោធិនប្រភេទ១ = serving soldiers; ប្រភេទ២ = soldiers moved to category 2 (no longer in the strength)
+        "categories": {"category1": len(soldiers), "category2": _count_status(db, scope, "category2")},
+        "requests": {  # សំណើ (document type "request") registered this year
+            "incoming": _requests(db, DocumentIncoming, today.year), "outgoing": _requests(db, DocumentOutgoing, today.year)},
+        "studying": _studying(db, scope, today),
     }
+
+
+def _count_status(db: Session, scope, code: str) -> int:
+    stmt = select(func.count(Soldier.id)).join(Lookup, Lookup.id == Soldier.status_id).where(
+        Soldier.deleted_at.is_(None), Lookup.category == "soldier_status", Lookup.code == code)
+    if scope is not None:
+        stmt = stmt.where(Soldier.current_unit_id.in_(scope))
+    return db.scalar(stmt) or 0
+
+
+def _requests(db: Session, model, year: int) -> int:
+    return db.scalar(select(func.count(model.id)).join(DocumentType, DocumentType.id == model.document_type_id).where(
+        model.deleted_at.is_(None), model.year == year, DocumentType.name_kh == "សំណើ")) or 0
+
+
+def _studying(db: Session, scope, today: date) -> dict:
+    """Serving soldiers in a course that is running today, in Cambodia and abroad."""
+    cambodia = db.scalar(select(Country.id).where(Country.name_en == "Cambodia"))
+    stmt = serving(select(TrainingCourse.country_id, func.count(func.distinct(Soldier.id)))
+                   .select_from(Soldier).join(TrainingParticipant, TrainingParticipant.soldier_id == Soldier.id)
+                   .join(TrainingCourse, TrainingCourse.id == TrainingParticipant.course_id)).where(
+        TrainingCourse.deleted_at.is_(None), TrainingCourse.start_date <= today,
+        or_(TrainingCourse.end_date.is_(None), TrainingCourse.end_date >= today))
+    if scope is not None:
+        stmt = stmt.where(Soldier.current_unit_id.in_(scope))
+    rows = db.execute(stmt.group_by(TrainingCourse.country_id)).all()
+    abroad = sum(n for country, n in rows if country and country != cambodia)
+    return {"in_country": sum(n for _, n in rows) - abroad, "abroad": abroad}
+
+
+# ---------------- activity feed (who is doing what) ----------------
+
+ACTION_NAMES = {
+    "create": "បានបន្ថែម", "update": "បានកែប្រែ", "delete": "បានលុប", "login": "បានចូលប្រព័ន្ធ",
+    "submit": "បានដាក់ជូន", "approve": "បានអនុម័ត", "return": "បានត្រឡប់ទៅកែ", "reject": "បានបដិសេធ",
+    "cancel": "បានលុបចោល", "upload": "បានភ្ជាប់ឯកសារ", "upload_photo": "បានដាក់រូបថត",
+    "change_password": "បានប្ដូរពាក្យសម្ងាត់", "deactivate": "បានបិទគណនី", "update_permissions": "បានកែសិទ្ធិ",
+    "upload_logo": "បានប្ដូរឡូហ្គោ", "import": "បាននាំចូល Excel",
+}
+TABLE_NAMES = {
+    "soldiers": "ប្រវត្តិរូបយោធិន", "decisions": "សេចក្ដីសម្រេច", "documents_incoming": "ឯកសារចូល",
+    "documents_outgoing": "ឯកសារចេញ", "training_courses": "វគ្គបណ្ដុះបណ្ដាល", "award_records": "ការសរសើរ",
+    "discipline_records": "វិន័យ", "retirement_records": "សោធននិវត្តន៍", "separation_records": "ចេញពីជួរ",
+    "strength_movements": "កើនថយ", "conscripts": "យុវជនកាតព្វកិច្ច", "conscript_registrations": "ការចុះឈ្មោះកាតព្វកិច្ច",
+    "conscript_medicals": "ការពិនិត្យសុខភាព", "conscript_services": "ការបម្រើកាតព្វកិច្ច", "users": "អ្នកប្រើប្រាស់",
+    "roles": "តួនាទី", "units": "អង្គភាព", "unit_positions": "ក្របខណ្ឌ", "document_files": "ឯកសារភ្ជាប់",
+    "soldier_attachments": "ឯកសារភ្ជាប់យោធិន", "settings": "ការកំណត់",
+}
+
+
+def _what(log: AuditLog) -> str | None:
+    data = log.after or log.before or {}
+    for key in ("name_kh", "decision_no", "incoming_no", "outgoing_no", "name", "username", "subject"):
+        if data.get(key):
+            return str(data[key])[:80]
+    return None
+
+
+@router.get("/dashboard/activity")
+def activity(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db),
+             _: User = Depends(require("audit", "view"))):
+    """The latest actions of every user, for leadership to follow the work in progress."""
+    logs = db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
+    return [{"id": a.id, "at": a.created_at.isoformat(), "user": a.user.full_name if a.user else "-",
+             "action": ACTION_NAMES.get(a.action, a.action), "action_code": a.action,
+             "table": TABLE_NAMES.get(a.table_name, a.table_name), "what": _what(a)} for a in logs]
 
 
 # ---------------- reports ----------------
@@ -312,7 +391,7 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
     elif key == "decisions":
         cols = [("kind", "ប្រភេទ"), ("decision_no", "លេខ"), ("effective_date", "ថ្ងៃចូលជាធរមាន")] + SOLDIER_COLS + \
                [("change", "ការផ្លាស់ប្ដូរ")]
-        stmt = select(Decision).where(Decision.status == "published", Decision.deleted_at.is_(None),
+        stmt = select(Decision).where(Decision.status == "approved", Decision.deleted_at.is_(None),
                                       Decision.effective_date.between(df, dt))
         if kind:
             stmt = stmt.where(Decision.kind == kind)
@@ -341,7 +420,7 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
                                ("min_years", "លក្ខខណ្ឌ (ឆ្នាំ)")]
         for s in promotion_due(db, user, unit_id):
             rows.append({**_soldier_cells(s), "rank_date": s.rank_date.isoformat(),
-                         "time_in_rank": ym_text(diff_ym(s.rank_date)), "min_years": s.rank.min_years_to_next})
+                         "time_in_rank": ym_text(diff_ym(s.rank_date)), "min_years": years_to_next_rank(s)})
 
     elif key == "retirement_due":
         cols = SOLDIER_COLS + [("unit_name", "អង្គភាព"), ("date_of_birth", "ថ្ងៃខែឆ្នាំកំណើត"), ("age", "អាយុ"),
@@ -377,13 +456,15 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
         }[key]
         cols = [("decision_no", "លេខលិខិត"), ("date", "កាលបរិច្ឆេទ")] + SOLDIER_COLS + [("unit_name", "អង្គភាព")] + extra
         stmt = select(model).where(model.deleted_at.is_(None), date_col.between(df, dt), *soldier_in_scope(model))
+        if key == "retirement" and kind:  # pension / voluntary / category2
+            stmt = stmt.where(RetirementRecord.type == kind)
         for r in db.scalars(stmt.order_by(date_col)).unique():
             if key == "discipline":
                 t = r.discipline_type.name_kh if r.discipline_type else ""
             elif key == "awards":
                 t = r.award_type.name_kh if r.award_type else ""
             elif key == "retirement":
-                t = "សោធននិវត្តន៍" if r.type == "pension" else "យោធិនប្រភេទ២"
+                t = RETIREMENT_TYPES.get(r.type, r.type)
             else:
                 t = r.reason.name_kh if r.reason else ""
             dval = getattr(r, date_col.key)

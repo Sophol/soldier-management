@@ -50,23 +50,21 @@ export function fileSize(bytes) {
   return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
-// decision workflow (backend core/permissions.py): draft -> 6 approval levels -> approved -> published
+// decision workflow (New.txt §12, backend core/permissions.py): ជំនួយការ -> នាយរងការិយាល័យ (ទទួលទិស) ->
+// នាយការិយាល័យ -> នាយករង (បូកសរុប) -> កំពុងដាក់សំណើ (នាយក) -> អនុម័ត
 export const WORKFLOW = [
-  { status: 'draft', step: '១. ចុះបញ្ជីសំណើ', label: 'ព្រាង' },
-  { status: 'review', step: '២. មន្ត្រីជំនាញ', label: 'ពិនិត្យលក្ខខណ្ឌ' },
-  { status: 'deputy_office', step: '៣. នាយរងការិយាល័យ', label: 'រង់ចាំនាយរងការិយាល័យ' },
-  { status: 'chief_office', step: '៤. ប្រធានការិយាល័យ', label: 'រង់ចាំប្រធានការិយាល័យ' },
-  { status: 'deputy_department', step: '៥. នាយរងនាយកដ្ឋាន', label: 'រង់ចាំនាយរងនាយកដ្ឋាន' },
-  { status: 'director', step: '៦. នាយកដ្ឋាន', label: 'រង់ចាំនាយកដ្ឋាន' },
-  { status: 'leadership', step: '៧. ថ្នាក់ដឹកនាំកំពូល', label: 'រង់ចាំថ្នាក់ដឹកនាំកំពូល' },
-  { status: 'approved', step: '៨. ចេញលិខិត', label: 'បានអនុម័ត (រង់ចាំចេញលិខិត)' },
-  { status: 'published', step: 'បានផ្សព្វផ្សាយ', label: 'បានផ្សព្វផ្សាយ' },
+  { status: 'draft', step: '១. ជំនួយការ', label: 'ព្រាង' },
+  { status: 'deputy_office', step: '២. នាយរងការិយាល័យ (ទទួលទិស)', label: 'រង់ចាំនាយរងការិយាល័យ' },
+  { status: 'chief_office', step: '៣. នាយការិយាល័យ', label: 'រង់ចាំនាយការិយាល័យ' },
+  { status: 'deputy_director', step: '៤. នាយករង (បូកសរុប)', label: 'រង់ចាំនាយករង (បូកសរុប)' },
+  { status: 'submitted', step: '៥. កំពុងដាក់សំណើ (នាយក)', label: 'កំពុងដាក់សំណើ' },
+  { status: 'approved', step: 'អនុម័ត', label: 'បានអនុម័ត' },
 ]
 export const STATUS_TEXT = {
   ...Object.fromEntries(WORKFLOW.map((w) => [w.status, w.label])), rejected: 'បានបដិសេធ', cancelled: 'បានលុបចោល',
 }
 export const STATUS_TAG = Object.fromEntries(Object.keys(STATUS_TEXT).map((k) => [k,
-  { draft: 'info', approved: 'success', published: 'success', rejected: 'danger', cancelled: 'danger' }[k] || 'warning']))
+  { draft: 'info', approved: 'success', rejected: 'danger', cancelled: 'danger' }[k] || 'warning']))
 
 /** Today as yyyy-mm-dd in the browser's time zone (toISOString() is UTC: before 07:00 in Cambodia it gives yesterday). */
 export function todayISO() {

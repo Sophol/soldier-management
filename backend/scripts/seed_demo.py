@@ -544,10 +544,10 @@ class Builder:
                         old_position=it.old_position_id, new_position=it.new_position_id,
                         old_unit=it.old_unit_id, new_unit=it.new_unit_id, decision_id=d.id,
                         note=f"{DECISION_KINDS[d.kind]} លេខ {d.decision_no}")
-        # signed by top leadership on the decision date, published (records updated) the next morning
-        d.status, d.approved_by = "published", self.admin.id
+        # approved by the director on the decision date: the records are updated at once
+        d.status, d.approved_by = "approved", self.admin.id
         d.approved_at = datetime.combine(d.decision_date, datetime.min.time()) + timedelta(hours=15)
-        d.published_by, d.published_at = self.admin.id, d.approved_at + timedelta(hours=18)
+        d.published_by, d.published_at = self.admin.id, d.approved_at
         d.status_changed_at = d.published_at
 
     def pick_items(self, kind: str, eff: date, count: int, used: set[int]) -> list[DecisionItem]:
@@ -861,48 +861,48 @@ def build_staffing(db, rng: random.Random) -> int:
 
 
 # one demo user per approval level (roles from scripts/seed.py)
+# one demo user per role of the approval workflow (New.txt §12; roles from scripts/seed.py)
 WORKFLOW_USERS = [
-    ("specialist", "ឈឹម សុផល", "Specialist"),
+    ("assistant", "ឈឹម សុផល", "Assistant"),
     ("deputy.office", "ទេព សុគន្ធា", "Deputy Chief of Office"),
     ("chief.office", "ហ៊ុល វណ្ណៈ", "Chief of Office"),
     ("deputy.director", "ខៀវ ចំរើន", "Deputy Director"),
     ("director", "វង្ស សំណាង", "Director"),
-    ("leader", "ឯក សម្បត្តិ", "Leadership"),
 ]
-STEP_COMMENTS = {
-    "review": "បានពិនិត្យឋានន្តរស័ក្តិ អតីតភាព ក្របខណ្ឌ និងវិន័យ — គ្រប់លក្ខខណ្ឌ",
-    "deputy_office": "ឯកភាពជាបឋម", "chief_office": "ត្រឹមត្រូវតាមក្របខណ្ឌ", "deputy_department": "ឯកភាព",
-    "director": "ឯកភាពដាក់ជូនថ្នាក់ដឹកនាំ", "leadership": "សម្រេចឯកភាព",
+STEP_COMMENTS = {  # opinion given when leaving a step
+    "draft": "ភ្ជាប់សំណើ និងឯកសារគ្រប់គ្រាន់", "deputy_office": "បានទទួលទិស — ពិនិត្យលក្ខខណ្ឌ ក្របខណ្ឌ និងវិន័យ គ្រប់គ្រាន់",
+    "chief_office": "ត្រឹមត្រូវតាមក្របខណ្ឌ", "deputy_director": "បានបូកសរុប ដាក់ជូននាយកសម្រេច", "submitted": "សម្រេចឯកភាព",
 }
 
 
 def build_workflow(db, password: str) -> None:
-    """Approval log for the demo decisions: users per level, the full trail of every published decision,
+    """Approval log for the demo decisions: a user per workflow role, the full trail of every approved decision,
     rejected files with a reason, and drafts part-way through the workflow (one of them overdue)."""
     from app.core.permissions import FLOW, WORKFLOW_STAGES
     from app.models import DecisionStep
 
     roles = {r.name: r.id for r in db.scalars(select(Role))}
     users = {}
-    for username, name, role in [*WORKFLOW_USERS, ("officer", "សុខ សុភាព", "Officer")]:
+    for username, name, role in WORKFLOW_USERS:
         u = db.scalar(select(User).where(User.username == username))
         if not u:
             u = User(username=username, password_hash=hash_password(password), full_name=name, role_id=roles[role])
             db.add(u)
             db.flush()
         users[role] = u
-    by_stage = dict(zip(WORKFLOW_STAGES, (users[r] for _, _, r in WORKFLOW_USERS), strict=True))
+    # who acts at each status: the assistant submits the draft, then one role per step
+    actor_at = {"draft": users["Assistant"],
+                **dict(zip(WORKFLOW_STAGES, (users[r] for _, _, r in WORKFLOW_USERS[1:]), strict=True))}
 
     def trail(d, until: str, start: datetime, step: timedelta) -> datetime:
         when, status = start, "draft"
         for to_status in FLOW[1:FLOW.index(until) + 1]:
-            actor = users["Officer"] if status in ("draft", "approved") else by_stage[status]
-            action = {"draft": "submit", "approved": "publish"}.get(status, "approve")
-            db.add(DecisionStep(decision_id=d.id, action=action, from_status=status, to_status=to_status,
-                                user_id=actor.id, comment=STEP_COMMENTS.get(status), created_at=when))
-            if to_status == "approved":
+            actor = actor_at[status]
+            db.add(DecisionStep(decision_id=d.id, action="submit" if status == "draft" else "approve",
+                                from_status=status, to_status=to_status, user_id=actor.id,
+                                comment=STEP_COMMENTS.get(status), created_at=when))
+            if to_status == "approved":  # the director's approval updates the records
                 d.approved_by, d.approved_at = actor.id, when
-            if to_status == "published":
                 d.published_by, d.published_at = actor.id, when
             status, when = to_status, when + step
         d.status, d.status_changed_at = until, when - step
@@ -914,19 +914,19 @@ def build_workflow(db, password: str) -> None:
     for d in decisions:
         if d.id in logged:
             continue
-        start = datetime.combine(d.decision_date, datetime.min.time()) - timedelta(days=12) + timedelta(hours=9)
-        if d.status == "published":
-            trail(d, "published", start, timedelta(days=1, hours=18))
+        start = datetime.combine(d.decision_date, datetime.min.time()) - timedelta(days=8) + timedelta(hours=9)
+        if d.status == "approved":
+            trail(d, "approved", start, timedelta(days=2))
         elif d.status in ("rejected", "cancelled") and not d.published_at:
             when = trail(d, "chief_office", start, timedelta(days=1))
             db.add(DecisionStep(decision_id=d.id, action="reject", from_status="chief_office", to_status="rejected",
-                                user_id=by_stage["chief_office"].id, created_at=when,
+                                user_id=actor_at["chief_office"].id, created_at=when,
                                 comment="យោធិនបានស្នើសុំមិនផ្លាស់ប្ដូរ — បញ្ចប់សំណុំរឿង"))
             d.status, d.status_changed_at = "rejected", when
         elif d.status == "draft":
             drafts.append(d)
-    # drafts in progress: one waiting at the director for longer than the overdue limit, one at the specialist
-    for d, until, days_ago in zip(drafts, ("director", "review"), (9, 1), strict=False):
+    # drafts in progress: one waiting for the director longer than the overdue limit, one just received by the deputy
+    for d, until, days_ago in zip(drafts, ("submitted", "deputy_office"), (9, 1), strict=False):
         trail(d, until, datetime.now() - timedelta(days=days_ago + 5), timedelta(days=1))
         d.status_changed_at = datetime.now() - timedelta(days=days_ago)
     db.flush()
@@ -942,6 +942,8 @@ def build_conscripts(db, rng: random.Random, count: int = 40) -> int:
                           .join(Commune, Commune.id == Village.commune_id)
                           .join(District, District.id == Commune.district_id)).all()
     education = {lk.name_kh: lk.id for lk in db.scalars(select(Lookup).where(Lookup.category == "education_level"))}
+    blood_types = list(db.scalars(select(Lookup.id).where(Lookup.category == "blood_type")))
+    specialties = list(db.scalars(select(Specialty.id)))
     single = db.scalar(select(Lookup.id).where(Lookup.category == "marital_status", Lookup.code == "single"))
     companies = list(db.scalars(select(Unit).where(Unit.level == 4, Unit.code.like("GRD-%"))))
     private = db.scalar(select(Rank.id).where(Rank.name_kh == "ពលទាហានទោ"))
@@ -961,7 +963,9 @@ def build_conscripts(db, rng: random.Random, count: int = 40) -> int:
                       marital_status_id=single, children_count=0,
                       education_level_id=education.get(rng.choice(["អនុវិទ្យាល័យ", "វិទ្យាល័យ", "វិទ្យាល័យ", "បរិញ្ញាបត្ររង"])),
                       profession=rng.choice([None, "កសិករ", "កម្មករ", "សិស្ស", "ជាងម៉ាស៊ីន", "អ្នកបើកបរ"]),
-                      languages=rng.choice([None, None, "អង់គ្លេស"]), driving_license=rng.choice([None, None, "A", "B"]))
+                      languages=rng.choice([None, None, "អង់គ្លេស"]), driving_license=rng.choice([None, None, "A", "B"]),
+                      blood_type_id=rng.choice(blood_types) if blood_types else None,
+                      specialty_id=rng.choice(specialties) if specialties and rng.random() < 0.5 else None)
         db.add(c)
         db.flush()
         status = statuses[i % len(statuses)]

@@ -25,7 +25,7 @@ from app.models import (
     User,
     Village,
 )
-from app.models.org import LOOKUP_CATEGORIES, UNIT_LEVELS
+from app.models.org import LOOKUP_CATEGORIES, POSITION_LEVELS, UNIT_LEVELS
 from app.schemas import (
     CommuneIn,
     CountryIn,
@@ -201,6 +201,54 @@ def _is_system_lookup(obj: Lookup) -> bool:
     return obj.code in SYSTEM_LOOKUP_CODES.get(obj.category, ())
 
 
+# ---------------- positions (មុខតំណែង › មុខតំណែងរង › មុខតំណែងចំណុះផ្ទាល់) ----------------
+
+def _position_before_save(db, user, obj, data, is_new):
+    parent = db.get(Position, data["parent_id"]) if data.get("parent_id") else None
+    if data.get("parent_id") and not parent:
+        raise HTTPException(400, "មុខតំណែងមេមិនត្រឹមត្រូវ")
+    p = parent
+    while p is not None:  # no cycles: the parent may not be this position or one below it
+        if not is_new and p.id == obj.id:
+            raise HTTPException(400, "មិនអាចដាក់មុខតំណែងនៅក្រោមខ្លួនឯង ឬមុខតំណែងរងរបស់ខ្លួនបានទេ")
+        p = db.get(Position, p.parent_id) if p.parent_id else None
+    data["level"] = parent.level + 1 if parent else 1
+    if data["level"] > 3:
+        raise HTTPException(400, "មុខតំណែងចំណុះផ្ទាល់ មិនអាចមានមុខតំណែងរងទៀតបានទេ")
+    if not is_new and data["level"] != obj.level and db.scalar(select(Position.id).where(Position.parent_id == obj.id).limit(1)):
+        raise HTTPException(400, "មុខតំណែងនេះមានមុខតំណែងរង — សូមផ្លាស់ទីមុខតំណែងរងជាមុនសិន")
+
+
+def _position_out(p: Position) -> dict:
+    db = object_session(p)
+    parent = db.get(Position, p.parent_id) if p.parent_id else None
+    return {**to_dict(p), "level_name": POSITION_LEVELS.get(p.level), "parent_name": parent.name_kh if parent else None}
+
+
+@extra.get("/positions/tree", tags=["positions"])
+def position_tree(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    rows = db.scalars(select(Position).order_by(Position.level, Position.sort_order, Position.name_kh)).all()
+    nodes = {p.id: {**to_dict(p), "level_name": POSITION_LEVELS.get(p.level), "children": []} for p in rows}
+    roots = []
+    for p in rows:
+        (nodes[p.parent_id]["children"] if p.parent_id in nodes else roots).append(nodes[p.id])
+    return roots
+
+
+# ---------------- specialties: military / civil field > section (ផ្នែក) > specialty ----------------
+
+def _specialty_before_save(db, user, obj, data, is_new):
+    if data.get("section_id"):
+        section = db.get(Lookup, data["section_id"])
+        if not section or section.category != "specialty_section":
+            raise HTTPException(400, "ផ្នែកមិនត្រឹមត្រូវ")
+
+
+def _specialty_out(sp: Specialty) -> dict:
+    section = object_session(sp).get(Lookup, sp.section_id) if sp.section_id else None
+    return {**to_dict(sp), "section_name": section.name_kh if section else None}
+
+
 def _lookup_check(db, user, obj, data, is_new):
     if data["category"] not in LOOKUP_CATEGORIES:
         raise HTTPException(400, "ប្រភេទបញ្ជីមិនត្រឹមត្រូវ")
@@ -232,12 +280,16 @@ router.include_router(crud_router(
 ))
 router.include_router(crud_router(
     prefix="/positions", model=Position, module="positions", schema=PositionIn, public_read=True,
-    search_fields=(Position.name_kh, Position.name_en), order_by=(Position.sort_order, Position.name_kh),
+    search_fields=(Position.name_kh, Position.name_en),
+    filter_fields={"parent_id": Position.parent_id, "level": Position.level},
+    order_by=(Position.level, Position.sort_order, Position.name_kh), serialize=_position_out,
+    before_save=_position_before_save,
 ))
 router.include_router(crud_router(
     prefix="/specialties", model=Specialty, module="specialties", schema=SpecialtyIn, public_read=True,
-    search_fields=(Specialty.name_kh, Specialty.name_en), filter_fields={"category": Specialty.category},
-    order_by=(Specialty.category, Specialty.name_kh),
+    search_fields=(Specialty.name_kh, Specialty.name_en),
+    filter_fields={"category": Specialty.category, "section_id": Specialty.section_id},
+    order_by=(Specialty.category, Specialty.name_kh), serialize=_specialty_out, before_save=_specialty_before_save,
 ))
 router.include_router(crud_router(
     prefix="/unit-positions", model=UnitPosition, module="positions", schema=UnitPositionIn,

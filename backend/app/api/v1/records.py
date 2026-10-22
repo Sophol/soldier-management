@@ -164,9 +164,12 @@ def _leave_after_delete(table: str):
     return hook
 
 
+RETIREMENT_TYPES = {"pension": "សោធននិវត្តន៍", "voluntary": "ស្ម័គ្រចិត្តចូលនិវត្តន៍", "category2": "យោធិនប្រភេទ២"}
+
+
 def retirement_out(r: RetirementRecord) -> dict:
     return {**to_dict(r), **soldier_brief(r.soldier),
-            "type_name": "សោធននិវត្តន៍" if r.type == "pension" else "យោធិនប្រភេទ២"}
+            "type_name": RETIREMENT_TYPES.get(r.type, r.type)}
 
 
 def separation_out(r: SeparationRecord) -> dict:
@@ -180,8 +183,8 @@ router.include_router(crud_router(
                    "date_from": RetirementRecord.effective_date, "date_to": RetirementRecord.effective_date},
     order_by=(RetirementRecord.effective_date.desc(), RetirementRecord.id.desc()),
     serialize=retirement_out, base_query=scoped(RetirementRecord), before_save=_leave_before,
-    after_save=_leave_after_save("retirement_records", lambda o: "retired" if o.type == "pension" else "category2",
-                                 lambda o: "retire" if o.type == "pension" else "category2"),
+    after_save=_leave_after_save("retirement_records", lambda o: "category2" if o.type == "category2" else "retired",
+                                 lambda o: "category2" if o.type == "category2" else "retire"),
     after_delete=_leave_after_delete("retirement_records"), tags=["retirement"],
 ))
 router.include_router(crud_router(

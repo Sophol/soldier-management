@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuth } from '@/stores/auth'
+import BrandLogo from '@/components/BrandLogo.vue'
 
 const { t } = useI18n()
 const auth = useAuth()
@@ -26,7 +27,7 @@ async function submit() {
 <template>
   <div class="login-wrap">
     <div class="login-card">
-      <img src="/favicon.svg" class="logo" alt="" />
+      <BrandLogo class="logo" />
       <div class="moul kingdom">ព្រះរាជាណាចក្រកម្ពុជា</div>
       <div class="moul motto">ជាតិ សាសនា ព្រះមហាក្សត្រ</div>
       <h1 class="moul">{{ t('app.title') }}</h1>
@@ -52,7 +53,7 @@ async function submit() {
   background: linear-gradient(135deg, #173d30 0%, #24614b 60%, #3c7a62 100%); }
 .login-card { width: 100%; max-width: 420px; background: #fff; border-radius: 12px; padding: 32px 30px; text-align: center;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25); }
-.logo { width: 64px; height: 64px; }
+.logo { width: 64px; height: 64px; object-fit: contain; }
 .kingdom { font-size: 15px; margin-top: 8px; color: #173d30; }
 .motto { font-size: 13px; color: #173d30; }
 h1 { font-size: 18px; color: #24614b; margin: 18px 0 4px; line-height: 1.8; }

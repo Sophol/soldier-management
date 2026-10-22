@@ -1,6 +1,6 @@
 """Regression tests for bugs found in the project review (each test names the bug it guards)."""
 
-from tests.test_flow import API, _lookups, _soldier, _units, publish
+from tests.test_flow import API, _lookups, _soldier, _units, approve_all
 
 
 def _promote(c, lk, soldier_id, rank_id, no, eff="2025-01-01"):
@@ -18,7 +18,7 @@ def test_cancel_blocked_after_direct_correction(admin):
     s = _soldier(admin, lk, unit["id"])
     ranks = lk["ranks"]
     d = _promote(admin, lk, s["id"], ranks[-4]["id"], "R-1")
-    publish(admin, d["id"])
+    approve_all(admin, d["id"])
     body = admin.get(f"{API}/soldiers/{s['id']}").json()
     body = {k: v for k, v in body.items() if k not in {"id"}}
     body["current_rank_id"] = ranks[-6]["id"]  # manual correction after the decision
@@ -35,7 +35,7 @@ def test_approve_rechecks_rank_and_status(admin):
     ranks = lk["ranks"]
     low = _promote(admin, lk, s["id"], ranks[-4]["id"], "R-2")
     high = _promote(admin, lk, s["id"], ranks[-6]["id"], "R-3")
-    publish(admin, high["id"])
+    approve_all(admin, high["id"])
     assert admin.post(f"{API}/decisions/{low['id']}/submit").status_code == 400
     assert admin.get(f"{API}/soldiers/{s['id']}").json()["current_rank_id"] == ranks[-6]["id"]
 

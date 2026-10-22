@@ -33,6 +33,8 @@ class Soldier(AuditMixin, SoftDeleteMixin, Base):
     unit_transfer_date: Mapped[date | None] = mapped_column(Date)
     from_unit_text: Mapped[str | None] = mapped_column(String(255))  # មកពីស្ថាប័នកងឯកភាព
     enlistment_date: Mapped[date | None] = mapped_column(Date)
+    service_track: Mapped[str] = mapped_column(String(10), default="admin")
+    establishment_no: Mapped[str | None] = mapped_column(String(100), index=True)  # បញ្ចូលក្របខ័ណ្ឌលេខ  # admin រដ្ឋបាល / combat ប្រតិបត្តិការសឹក
 
     status_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"), index=True)
     education_level_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))

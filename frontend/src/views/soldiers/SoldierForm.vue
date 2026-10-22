@@ -24,7 +24,7 @@ const empty = () => ({
   military_id: '', name_kh: '', name_latin: '', gender: 'M', date_of_birth: null, national_id: '', phone: '',
   blood_type_id: null, birth_village_id: null, birth_place_text: '', current_village_id: null, current_address_text: '',
   current_rank_id: null, rank_date: null, current_position_id: null, position_date: null, current_unit_id: null,
-  unit_transfer_date: null, from_unit_text: '', enlistment_date: null,
+  unit_transfer_date: null, from_unit_text: '', enlistment_date: null, service_track: 'admin', establishment_no: '',
   status_id: lookups.list('soldier_status').find((s) => s.code === 'active')?.id ?? null,
   education_level_id: null, specialty_id: null, combat_veteran: false, combat_note: '',
   marital_status_id: null, spouse_name: '', spouse_job_id: null, children_count: 0, father_name: '', mother_name: '',
@@ -176,6 +176,10 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
               <el-col :md="4"><el-form-item label="ថ្ងៃផ្លាស់ប្ដូរកងឯកភាព"><el-date-picker v-model="form.unit_transfer_date" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
               <el-col :md="8"><el-form-item label="មកពីស្ថាប័នកងឯកភាព"><el-input v-model="form.from_unit_text" /></el-form-item></el-col>
               <el-col :md="6"><el-form-item label="ថ្ងៃខែឆ្នាំបម្រើចូលទ័ព"><el-date-picker v-model="form.enlistment_date" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
+              <el-col :md="6"><el-form-item label="បញ្ចូលក្របខ័ណ្ឌលេខ"><el-input v-model="form.establishment_no" /></el-form-item></el-col>
+              <el-col :md="6"><el-form-item label="ប្រភេទសេវា (សម្រាប់ឆ្នាំឡើងស័ក្តិ)">
+                <el-radio-group v-model="form.service_track"><el-radio value="admin">សេវារដ្ឋបាល</el-radio><el-radio value="combat">ប្រតិបត្តិការសឹក</el-radio></el-radio-group>
+              </el-form-item></el-col>
               <el-col :md="6"><el-form-item label="ស្ថានភាព">
                 <el-select v-model="form.status_id" clearable><el-option v-for="o in lookups.list('soldier_status')" :key="o.id" :value="o.id" :label="o.name_kh" /></el-select>
               </el-form-item></el-col>

@@ -24,21 +24,19 @@ def test_each_level_acts_only_at_its_own_step(admin, client):
     d = _draft(admin, lk, s["id"])
     chief = _login_as(admin, client, "wf.chief", "Chief of Office")
     admin_h = dict(client.headers)
-    assert admin.post(f"{API}/decisions/{d['id']}/submit").json()["status"] == "review"
-    # the chief of office cannot act while the file is at the specialist or the deputy chief
+    assert admin.post(f"{API}/decisions/{d['id']}/submit").json()["status"] == "deputy_office"
+    # the chief of office cannot act while the file is with the deputy chief of office
     assert client.post(f"{API}/decisions/{d['id']}/approve", headers=chief).status_code == 403
     client.headers.update(admin_h)
-    admin.post(f"{API}/decisions/{d['id']}/approve", json={"comment": "លក្ខខណ្ឌគ្រប់គ្រាន់"})
-    admin.post(f"{API}/decisions/{d['id']}/approve")
+    admin.post(f"{API}/decisions/{d['id']}/approve", json={"comment": "បានទទួលទិស"})
     r = client.post(f"{API}/decisions/{d['id']}/approve", headers=chief, json={"comment": "ត្រឹមត្រូវ"})
-    assert r.status_code == 200 and r.json()["status"] == "deputy_department"
+    assert r.status_code == 200 and r.json()["status"] == "deputy_director"
     assert client.post(f"{API}/decisions/{d['id']}/approve", headers=chief).status_code == 403
-    # nothing changed on the soldier yet
     client.headers.update(admin_h)
-    assert admin.get(f"{API}/soldiers/{s['id']}").json()["current_rank_id"] == s["current_rank_id"]
+    assert admin.get(f"{API}/soldiers/{s['id']}").json()["current_rank_id"] == s["current_rank_id"]  # unchanged yet
     full = admin.get(f"{API}/decisions/{d['id']}").json()
-    assert [st["action"] for st in full["steps"]] == ["submit", "approve", "approve", "approve"]
-    assert full["steps"][1]["comment"] == "លក្ខខណ្ឌគ្រប់គ្រាន់"
+    assert [st["action"] for st in full["steps"]] == ["submit", "approve", "approve"]
+    assert full["steps"][1]["comment"] == "បានទទួលទិស"
 
 
 def test_return_and_reject_need_a_reason(admin):
@@ -47,10 +45,10 @@ def test_return_and_reject_need_a_reason(admin):
     s = _soldier(admin, lk, unit["id"])
     d = _draft(admin, lk, s["id"])
     admin.post(f"{API}/decisions/{d['id']}/submit")
-    admin.post(f"{API}/decisions/{d['id']}/approve")  # -> deputy_office
+    admin.post(f"{API}/decisions/{d['id']}/approve")  # -> chief_office
     assert admin.post(f"{API}/decisions/{d['id']}/return", json={}).status_code == 400
     r = admin.post(f"{API}/decisions/{d['id']}/return", json={"comment": "ខ្វះឯកសារ"}).json()
-    assert r["status"] == "review"
+    assert r["status"] == "deputy_office"
     r = admin.post(f"{API}/decisions/{d['id']}/return", json={"comment": "កែលេខ"}).json()
     assert r["status"] == "draft" and "edit" in r["actions"]
     admin.post(f"{API}/decisions/{d['id']}/submit")
@@ -59,18 +57,21 @@ def test_return_and_reject_need_a_reason(admin):
     assert admin.delete(f"{API}/decisions/{d['id']}").status_code == 200
 
 
-def test_publish_registers_outgoing_letter_and_applies(admin):
+def test_director_approval_registers_letter_and_applies(admin):
     lk = _lookups(admin)
     _, unit, _ = _units(admin)
     s = _soldier(admin, lk, unit["id"])
     d = _draft(admin, lk, s["id"])
-    assert admin.post(f"{API}/decisions/{d['id']}/publish").status_code == 400  # not approved yet
     admin.post(f"{API}/decisions/{d['id']}/submit")
-    for _ in range(6):
-        admin.post(f"{API}/decisions/{d['id']}/approve")
-    r = admin.post(f"{API}/decisions/{d['id']}/publish").json()
-    assert r["status"] == "published" and r["outgoing_no"] and r["decision_no"] == r["outgoing_no"]
+    for _ in range(3):
+        r = admin.post(f"{API}/decisions/{d['id']}/approve").json()
+    assert r["status"] == "submitted" and r["status_name"].startswith("កំពុងដាក់សំណើ")
+    assert admin.get(f"{API}/soldiers/{s['id']}").json()["current_rank_id"] == s["current_rank_id"]
+    r = admin.post(f"{API}/decisions/{d['id']}/approve", json={"decision_no": "77 ស.ស.រ"}).json()
+    assert r["status"] == "approved" and r["outgoing_no"] and r["decision_no"] == "77 ស.ស.រ"
     assert admin.get(f"{API}/soldiers/{s['id']}").json()["current_rank_id"] == lk["ranks"][-4]["id"]
+    assert admin.post(f"{API}/decisions/{d['id']}/cancel").json()["status"] == "cancelled"
+    assert admin.get(f"{API}/soldiers/{s['id']}").json()["current_rank_id"] == s["current_rank_id"]
 
 
 def test_waiting_filter_and_dashboard(admin, client):
@@ -79,10 +80,44 @@ def test_waiting_filter_and_dashboard(admin, client):
     s = _soldier(admin, lk, unit["id"])
     d = _draft(admin, lk, s["id"])
     admin.post(f"{API}/decisions/{d['id']}/submit")
-    h = _login_as(admin, client, "wf.specialist", "Specialist")
+    h = _login_as(admin, client, "wf.deputy", "Deputy Chief of Office")
     inbox = client.get(f"{API}/decisions", params={"kind": "promote", "waiting": True, "size": 200}, headers=h).json()
     assert d["id"] in {x["id"] for x in inbox["items"]}
     assert client.get(f"{API}/dashboard/summary", headers=h).json()["workflow"]["waiting_for_me"] >= 1
+
+
+def test_only_the_level_role_or_super_admin_acts(admin, client):
+    """After submitting, only the deputy chief of office (and Super Admin) acts at that step — not Admin or others."""
+    lk = _lookups(admin)
+    _, unit, _ = _units(admin)
+    s = _soldier(admin, lk, unit["id"])
+    d = _draft(admin, lk, s["id"])
+    admin.post(f"{API}/decisions/{d['id']}/submit")
+    admin_h = dict(client.headers)
+    others = [_login_as(admin, client, f"wf.{r.lower().replace(' ', '')}", r)
+              for r in ("Admin", "Assistant", "Chief of Office", "Director")]
+    deputy = _login_as(admin, client, "wf.dep", "Deputy Chief of Office")
+    for h in others:
+        assert client.post(f"{API}/decisions/{d['id']}/approve", headers=h).status_code == 403
+        assert client.get(f"{API}/decisions/{d['id']}", headers=h).json()["actions"] == []
+    assert client.get(f"{API}/decisions/{d['id']}", headers=deputy).json()["actions"] == ["approve", "return", "reject"]
+    r = client.post(f"{API}/decisions/{d['id']}/approve", headers=deputy)
+    assert r.status_code == 200 and r.json()["status"] == "chief_office"
+    client.headers.update(admin_h)
+
+
+def test_assistant_enters_and_submits(admin, client):
+    lk = _lookups(admin)
+    _, unit, _ = _units(admin)
+    s = _soldier(admin, lk, unit["id"])
+    admin_h = dict(client.headers)
+    h = _login_as(admin, client, "wf.assist", "Assistant")
+    d = client.post(f"{API}/decisions", headers=h, json={
+        "kind": "promote", "decision_date": "2025-06-01", "effective_date": "2025-07-01",
+        "items": [{"soldier_id": s["id"], "new_rank_id": lk["ranks"][-4]["id"]}]}).json()
+    assert d["actions"] == ["edit", "submit"]
+    assert client.post(f"{API}/decisions/{d['id']}/submit", headers=h).json()["status"] == "deputy_office"
+    client.headers.update(admin_h)
 
 
 def test_conscription(admin):
@@ -111,21 +146,49 @@ def test_medical_data_needs_its_own_permission(admin, client):
     assert client.get(f"{API}/conscript-medicals", headers=h).status_code == 403
 
 
-def test_only_specialist_or_super_admin_approves_review(admin, client):
-    """After submitting, only the Specialist role (and Super Admin) may act at the review step — not Admin."""
+def test_dashboard_new_counts_and_activity(admin):
+    d = admin.get(f"{API}/dashboard/summary").json()
+    assert {"category1", "category2"} <= d["categories"].keys()
+    assert {"missing_dob", "missing_enlistment", "missing_rank_date"} <= d["alerts"].keys()
+    assert {"incoming", "outgoing"} == d["requests"].keys() and {"in_country", "abroad"} == d["studying"].keys()
+    feed = admin.get(f"{API}/dashboard/activity", params={"limit": 5}).json()
+    assert feed and feed[0]["user"] and feed[0]["action"]
+
+
+def test_activity_feed_needs_audit_permission(admin, client):
+    h = _login_as(admin, client, "wf.view", "Viewer")
+    assert client.get(f"{API}/dashboard/activity", headers=h).status_code == 403
+
+
+def test_military_id_list_filter(admin):
     lk = _lookups(admin)
     _, unit, _ = _units(admin)
-    s = _soldier(admin, lk, unit["id"])
-    d = _draft(admin, lk, s["id"])
-    admin.post(f"{API}/decisions/{d['id']}/submit")
-    admin_h = dict(client.headers)
-    others = [_login_as(admin, client, f"wf.{r.lower().replace(' ', '')}", r) for r in ("Admin", "Officer", "Chief of Office")]
-    specialist = _login_as(admin, client, "wf.spec", "Specialist")
-    for h in others:
-        assert client.post(f"{API}/decisions/{d['id']}/approve", headers=h).status_code == 403
-        item = client.get(f"{API}/decisions/{d['id']}", headers=h).json()
-        assert item["actions"] == []
-    assert client.get(f"{API}/decisions/{d['id']}", headers=specialist).json()["actions"] == ["approve", "return", "reject"]
-    r = client.post(f"{API}/decisions/{d['id']}/approve", headers=specialist)
-    assert r.status_code == 200 and r.json()["status"] == "deputy_office"
-    client.headers.update(admin_h)
+    a = _soldier(admin, lk, unit["id"], mid="TEST-L1")
+    _soldier(admin, lk, unit["id"], mid="TEST-L2", national_id=None)
+    c = _soldier(admin, lk, unit["id"], mid="TEST-L3", national_id="TEST-NID-L3")
+    found = admin.get(f"{API}/soldiers", params={"military_ids": "TEST-L1\nTEST-L3, NOPE"}).json()
+    assert {x["id"] for x in found["items"]} == {a["id"], c["id"]}
+    assert admin.get(f"{API}/soldiers/export", params={"military_ids": "TEST-L1"}).status_code == 200
+
+
+def test_voluntary_retirement_and_service_track(admin):
+    lk = _lookups(admin)
+    _, unit, _ = _units(admin)
+    s = _soldier(admin, lk, unit["id"], service_track="combat")
+    assert s["service_track"] == "combat"
+    r = admin.post(f"{API}/retirements", json={"soldier_id": s["id"], "type": "voluntary", "effective_date": "2025-01-01"})
+    assert r.status_code == 201 and r.json()["type_name"] == "ស្ម័គ្រចិត្តចូលនិវត្តន៍"
+    assert admin.get(f"{API}/soldiers/{s['id']}").json()["status_code"] == "retired"
+
+
+def test_logo_upload_is_public_and_protected(admin, client):
+    png = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6364f8cf"
+                        "000000020001e221bc330000000049454e44ae426082")
+    assert admin.post(f"{API}/settings/logo", files={"file": ("logo.png", png, "image/png")}).status_code == 200
+    headers = client.headers.pop("Authorization")
+    assert client.get(f"{API}/settings/logo").status_code == 200  # shown on the login page
+    client.headers["Authorization"] = headers
+    # the general settings save cannot point the public logo at another stored file
+    admin.put(f"{API}/settings", json={"values": {"logo_path": "photos/x.jpg"}})
+    assert admin.get(f"{API}/settings/logo").status_code == 200
+    admin.delete(f"{API}/settings/logo")

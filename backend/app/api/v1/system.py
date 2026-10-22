@@ -2,7 +2,8 @@
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,7 +21,7 @@ from app.core.security import (
 )
 from app.models import AuditLog, Permission, Role, Setting, User
 from app.schemas import ChangePasswordIn, LoginIn, RefreshIn, RoleIn, RolePermissionsIn, SettingsIn, UserIn
-from app.services.common import audit, paginate, to_dict
+from app.services.common import audit, delete_storage_file, paginate, save_upload, storage_file, to_dict
 
 router = APIRouter()
 
@@ -253,13 +254,16 @@ def delete_role(role_id: int, request: Request, db: Session = Depends(get_db),
 
 @router.get("/settings", tags=["settings"])
 def get_settings(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    return {s.key: {"value": s.value, "description": s.description} for s in db.scalars(select(Setting))}
+    return {s.key: {"value": s.value, "description": s.description}
+            for s in db.scalars(select(Setting)) if s.key != "logo_path"}
 
 
 @router.put("/settings", tags=["settings"])
 def put_settings(payload: SettingsIn, request: Request, db: Session = Depends(get_db),
                  actor: User = Depends(require("settings", "update"))):
     for k, v in payload.values.items():
+        if k == "logo_path":  # set only by the logo upload: it is served without login
+            continue
         s = db.get(Setting, k)
         if s:
             s.value = v
@@ -267,6 +271,43 @@ def put_settings(payload: SettingsIn, request: Request, db: Session = Depends(ge
             db.add(Setting(key=k, value=v))
     audit(db, actor, "update", table="settings", record_id="*", request=request)
     db.commit()
+    return {"ok": True}
+
+
+# ---------------- logo (ផ្លាស់ប្ដូរ logo) ----------------
+
+@router.get("/settings/logo", tags=["settings"])
+def get_logo(db: Session = Depends(get_db)):
+    """Public: the login page shows it before anyone signs in."""
+    path = get_setting(db, "logo_path")
+    if not path:
+        raise HTTPException(404, "គ្មានឡូហ្គោ")
+    return FileResponse(storage_file(path), headers={"Cache-Control": "no-cache"})
+
+
+@router.post("/settings/logo", tags=["settings"])
+def upload_logo(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db),
+                actor: User = Depends(require("settings", "update"))):
+    path, _ = save_upload(file, "branding", images_only=True)
+    old = db.get(Setting, "logo_path")
+    if old:
+        delete_storage_file(old.value)
+        old.value = path
+    else:
+        db.add(Setting(key="logo_path", value=path, description="Logo file"))
+    audit(db, actor, "upload_logo", table="settings", record_id="logo_path", request=request)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/settings/logo", tags=["settings"])
+def delete_logo(request: Request, db: Session = Depends(get_db), actor: User = Depends(require("settings", "update"))):
+    s = db.get(Setting, "logo_path")
+    if s:
+        delete_storage_file(s.value)
+        db.delete(s)
+        audit(db, actor, "delete", table="settings", record_id="logo_path", request=request)
+        db.commit()
     return {"ok": True}
 
 

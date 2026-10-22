@@ -35,7 +35,7 @@ onMounted(async () => {
       <h1 class="moul">ឧបសម្ព័ន្ធ{{ d.kind_name }}</h1>
       <p class="center">ភ្ជាប់ជាមួយសេចក្ដីសម្រេចលេខ {{ khDigits(d.decision_no) }} {{ fmtDateLong(d.decision_date) }}
         ចូលជាធរមានចាប់ពី{{ fmtDateLong(d.effective_date) }}</p>
-      <p v-if="d.status !== 'published'" class="draft">*** {{ d.status_name }} ***</p>
+      <p v-if="d.status !== 'approved'" class="draft">*** {{ d.status_name }} ***</p>
       <table class="grid">
         <thead>
           <tr>

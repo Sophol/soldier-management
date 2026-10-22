@@ -1,12 +1,13 @@
 """Appointment / transfer / promotion decisions (ការងារតែងតាំង ផ្លាស់ប្ដូរ និងដំឡើងឋានន្តរស័ក្តិ).
 
 A decision lists one or more soldiers with their new rank/position/unit and goes through the approval
-workflow (answer.txt): draft -> review by a specialist -> deputy chief of office -> chief of office ->
-deputy director -> director -> top leadership -> approved -> published. Each level approves, returns
-(one step back, with a reason) or rejects (with a reason); every step is logged in decision_steps.
-Nothing changes on the soldier until the decision is published (outgoing letter registered); publishing
-writes history + strength movements, cancelling a published decision reverts it (only if nothing newer
-has changed the soldier since).
+workflow (New.txt §12): the assistant (ជំនួយការ) enters and submits it -> deputy chief of office (ទទួលទិស) ->
+chief of office -> deputy director (បូកសរុប) -> submitted to the director (កំពុងដាក់សំណើ) -> approved.
+Each level approves, returns (one step back, with a reason) or rejects (with a reason); every step is
+logged in decision_steps. A decision must fit the staffing table and rank quotas (New.txt §4).
+Nothing changes on the soldier until the director approves: that registers the outgoing letter and writes
+history + strength movements. Cancelling an approved decision reverts it (only if nothing newer has
+changed the soldier since).
 """
 
 from datetime import datetime, timedelta
@@ -19,7 +20,14 @@ from app.api.v1.documents import allocate_outgoing_number
 from app.api.v1.system import get_setting
 from app.core.database import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import DECISION_MODULE, DECISION_STATUSES, FLOW, WORKFLOW_STAGES
+from app.core.permissions import (
+    DECISION_MODULE,
+    DECISION_STATUSES,
+    FLOW,
+    LEGACY_STATUSES,
+    STAGE_PERMISSION,
+    WORKFLOW_STAGES,
+)
 from app.models import (
     Decision,
     DecisionItem,
@@ -36,10 +44,10 @@ from app.models import (
     User,
 )
 from app.models.decision import DECISION_KINDS
-from app.schemas import DecisionIn, PublishIn, WorkflowStepIn
+from app.schemas import ApproveIn, DecisionIn, WorkflowStepIn
 from app.services.common import audit, names_by_id, paginate, scope_unit_ids, to_dict
-from app.services.soldier import add_history, add_movement, diff_ym, is_inactive
-from app.services.staffing import staffing_warnings
+from app.services.soldier import add_history, add_movement, diff_ym, is_inactive, years_to_next_rank
+from app.services.staffing import staffing_problems
 
 router = APIRouter(prefix="/decisions", tags=["decisions"])
 
@@ -50,9 +58,15 @@ def _need(user: User, kind: str, action: str) -> None:
         raise HTTPException(403, f"គ្មានសិទ្ធិ: {module}.{action}")
 
 
-IN_PROGRESS = (*WORKFLOW_STAGES, "approved")  # waiting for someone to act
+IN_PROGRESS = tuple(WORKFLOW_STAGES)  # waiting for someone to act
 STATUS_ACTIONS = {"draft": ("edit", "submit", "delete"), **dict.fromkeys(WORKFLOW_STAGES, ("approve", "return", "reject")),
-                  "approved": ("publish",), "published": ("cancel",), "rejected": ("delete",)}
+                  "approved": ("cancel",), "rejected": ("delete",)}
+STATUS_NAMES = {**LEGACY_STATUSES, **DECISION_STATUSES}  # approval logs may still name old steps
+
+
+def can_act_at(user: User, status: str) -> bool:
+    """Only the role of that level (and Super Admin) may approve / return / reject at a workflow step."""
+    return status in STAGE_PERMISSION and user.can(STAGE_PERMISSION[status], "approve")
 
 
 def allowed_actions(user: User, d: Decision) -> list[str]:
@@ -62,10 +76,8 @@ def allowed_actions(user: User, d: Decision) -> list[str]:
         acts = ["edit", "submit"] if user.can(module, "update") else []
         return acts + (["delete"] if user.can(module, "delete") else [])
     if d.status in WORKFLOW_STAGES:
-        return ["approve", "return", "reject"] if user.can(f"wf_{d.status}", "approve") else []
+        return ["approve", "return", "reject"] if can_act_at(user, d.status) else []
     if d.status == "approved":
-        return ["publish"] if user.can("wf_publish", "approve") else []
-    if d.status == "published":
         return ["cancel"] if user.can(module, "approve") else []
     if d.status == "rejected":
         return ["delete"] if user.can(module, "delete") else []
@@ -101,7 +113,7 @@ def decision_out(db: Session, d: Decision, with_items: bool = True, user: User |
             "old_unit": units.get(i.old_unit_id), "new_unit": units.get(i.new_unit_id),
         } for i in d.items]
         out["steps"] = [{**to_dict(st), "user_name": st.user.full_name if st.user else None,
-                         "from_name": DECISION_STATUSES.get(st.from_status), "to_name": DECISION_STATUSES.get(st.to_status)}
+                         "from_name": STATUS_NAMES.get(st.from_status), "to_name": STATUS_NAMES.get(st.to_status)}
                         for st in d.steps]
     return out
 
@@ -151,8 +163,28 @@ def _check_change(db: Session, s: Soldier, kind: str, new_rank_id, new_position_
             raise HTTPException(400, f"{label}: មុខតំណែងថ្មីមិនត្រឹមត្រូវ")
 
 
+def _check_staffing(db: Session, kind: str, changes: list[tuple]) -> None:
+    """Refuse the decision when it would break the staffing table or a rank quota.
+    changes: [(soldier, new_rank_id, new_position_id, new_unit_id, label)]; soldiers of the same decision going
+    into the same slot or rank are counted together."""
+    problems, slots, ranks = [], {}, {}
+    for s, new_rank_id, new_position_id, new_unit_id, label in changes:
+        unit_id, position_id = new_unit_id or s.current_unit_id, new_position_id or s.current_position_id
+        slot_changes = bool(new_position_id or new_unit_id)
+        rank_id = (new_rank_id if kind == "promote" or new_rank_id else None) or s.current_rank_id
+        problems += staffing_problems(db, s, unit_id=unit_id, position_id=position_id, rank_id=rank_id,
+                                      slot_changes=slot_changes, rank_changes=bool(new_rank_id), label=label,
+                                      planned_slot=slots.get((unit_id, position_id), 0), planned_rank=ranks.get(rank_id, 0))
+        if slot_changes:
+            slots[(unit_id, position_id)] = slots.get((unit_id, position_id), 0) + 1
+        if new_rank_id:
+            ranks[rank_id] = ranks.get(rank_id, 0) + 1
+    if problems:
+        raise HTTPException(400, "មិនស្របនឹងក្របខណ្ឌ៖\n" + "\n".join(problems))
+
+
 def _validate_items(db: Session, user: User, payload: DecisionIn) -> tuple[list[DecisionItem], list[str]]:
-    items, warnings, seen = [], [], set()
+    items, warnings, seen, changes = [], [], set(), []
     scope = scope_unit_ids(db, user)
     for it in payload.items:
         if it.soldier_id in seen:
@@ -171,21 +203,19 @@ def _validate_items(db: Session, user: User, payload: DecisionIn) -> tuple[list[
             raise HTTPException(400, f"{label}: សូមជ្រើសរើសមុខតំណែងថ្មី")
         if payload.kind == "transfer" and not (it.new_unit_id or it.new_position_id or new_rank_id):
             raise HTTPException(400, f"{label}: សូមជ្រើសរើសអង្គភាព មុខតំណែង ឬឋានន្តរស័ក្តិថ្មី")
-        if new_rank_id and s.rank and s.rank.min_years_to_next:
+        need = years_to_next_rank(s)
+        if new_rank_id and need:
             ym = diff_ym(s.rank_date, payload.effective_date)
-            if ym is None or ym[0] < s.rank.min_years_to_next:
-                warnings.append(f"{label}: រយៈពេលឡើងស័ក្តិមិនទាន់គ្រប់ {s.rank.min_years_to_next} ឆ្នាំ")
+            if ym is None or ym[0] < need:
+                warnings.append(f"{label}: រយៈពេលឡើងស័ក្តិមិនទាន់គ្រប់ {need} ឆ្នាំ")
         _check_change(db, s, payload.kind, new_rank_id, it.new_position_id, it.new_unit_id, label)
-        if it.new_position_id or it.new_unit_id or new_rank_id:
-            warnings += staffing_warnings(
-                db, s, unit_id=it.new_unit_id or s.current_unit_id,
-                position_id=it.new_position_id or s.current_position_id,
-                rank_id=new_rank_id or s.current_rank_id, rank_changes=bool(new_rank_id), label=label)
+        changes.append((s, new_rank_id, it.new_position_id, it.new_unit_id, label))
         items.append(DecisionItem(
             soldier_id=s.id, old_rank_id=s.current_rank_id, old_position_id=s.current_position_id,
             old_unit_id=s.current_unit_id, new_rank_id=new_rank_id,
             new_position_id=it.new_position_id, new_unit_id=it.new_unit_id, note=it.note,
         ))
+    _check_staffing(db, payload.kind, changes)
     return items, warnings
 
 
@@ -206,8 +236,7 @@ def list_decisions(kind: str, page: int = Query(1, ge=1), size: int = Query(20, 
     if status:
         stmt = stmt.where(Decision.status == status)
     if waiting:
-        mine = [st for st in WORKFLOW_STAGES if user.can(f"wf_{st}", "approve")]
-        mine += ["approved"] if user.can("wf_publish", "approve") else []
+        mine = [st for st in WORKFLOW_STAGES if can_act_at(user, st)]
         stmt = stmt.where(Decision.status.in_(mine))
     if date_from:
         stmt = stmt.where(Decision.decision_date >= date_from)
@@ -312,12 +341,17 @@ def _move(db: Session, d: Decision, user: User, action: str, to_status: str, com
 
 
 def _recheck(db: Session, d: Decision) -> None:
-    """Soldiers may have been promoted, moved or retired since the draft: the items must still be valid."""
+    """Soldiers may have been promoted, moved or retired since the draft, and the staffing table may have
+    filled up: the items must still be valid."""
+    changes = []
     for it in d.items:
         s = db.get(Soldier, it.soldier_id)
         if not s or s.deleted_at:
             raise HTTPException(400, f"យោធិន id={it.soldier_id} មិនមានទៀតទេ")
-        _check_change(db, s, d.kind, it.new_rank_id, it.new_position_id, it.new_unit_id, f"{s.name_kh} ({s.military_id})")
+        label = f"{s.name_kh} ({s.military_id})"
+        _check_change(db, s, d.kind, it.new_rank_id, it.new_position_id, it.new_unit_id, label)
+        changes.append((s, it.new_rank_id, it.new_position_id, it.new_unit_id, label))
+    _check_staffing(db, d.kind, changes)
 
 
 def _done(db: Session, user: User, d: Decision, action: str, request: Request) -> dict:
@@ -330,7 +364,7 @@ def _done(db: Session, user: User, d: Decision, action: str, request: Request) -
 @router.post("/{decision_id}/submit")
 def submit_decision(decision_id: int, request: Request, payload: WorkflowStepIn | None = None,
                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Step 1 -> 2: the registered request goes to the specialist for the conditions check."""
+    """Step 1 -> 2: the assistant sends the request to the deputy chief of office."""
     d = _act(db, user, decision_id, "submit")
     _recheck(db, d)
     _move(db, d, user, "submit", FLOW[1], payload.comment if payload else None)
@@ -338,15 +372,18 @@ def submit_decision(decision_id: int, request: Request, payload: WorkflowStepIn 
 
 
 @router.post("/{decision_id}/approve")
-def approve_decision(decision_id: int, request: Request, payload: WorkflowStepIn | None = None,
+def approve_decision(decision_id: int, request: Request, payload: ApproveIn | None = None,
                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """The current level approves: the decision moves to the next level (after top leadership: approved)."""
+    """The current level approves and the decision moves up one level. The director's approval is final:
+    it registers the outgoing letter and updates the soldiers' records."""
+    payload = payload or ApproveIn()
     d = _act(db, user, decision_id, "approve")
     _recheck(db, d)
     to_status = FLOW[FLOW.index(d.status) + 1]
-    _move(db, d, user, "approve", to_status, payload.comment if payload else None)
     if to_status == "approved":
+        _apply(db, d, user, payload)
         d.approved_by, d.approved_at = user.id, datetime.now()
+    _move(db, d, user, "approve", to_status, payload.comment)
     return _done(db, user, d, "approve", request)
 
 
@@ -359,7 +396,7 @@ def _reason(payload: WorkflowStepIn | None) -> str:
 @router.post("/{decision_id}/return")
 def return_decision(decision_id: int, payload: WorkflowStepIn, request: Request, db: Session = Depends(get_db),
                     user: User = Depends(get_current_user)):
-    """Send back one level for corrections (the specialist sends it back to the draft)."""
+    """Send back one level for corrections (from the deputy chief of office: back to the assistant's draft)."""
     d = _act(db, user, decision_id, "return")
     _move(db, d, user, "return", FLOW[FLOW.index(d.status) - 1], _reason(payload))
     return _done(db, user, d, "return", request)
@@ -374,13 +411,8 @@ def reject_decision(decision_id: int, payload: WorkflowStepIn, request: Request,
     return _done(db, user, d, "reject", request)
 
 
-@router.post("/{decision_id}/publish")
-def publish_decision(decision_id: int, request: Request, payload: PublishIn | None = None,
-                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Step 8: register the outgoing letter and update the soldiers' records."""
-    payload = payload or PublishIn()
-    d = _act(db, user, decision_id, "publish")
-    _recheck(db, d)
+def _apply(db: Session, d: Decision, user: User, payload: ApproveIn) -> None:
+    """Final approval: register the outgoing letter (or use the one given) and update the soldiers' records."""
     if payload.decision_date:
         d.decision_date = payload.decision_date
     if payload.outgoing_document_id:
@@ -401,7 +433,7 @@ def publish_decision(decision_id: int, request: Request, payload: PublishIn | No
     eff = d.effective_date
     for it in d.items:
         s = db.get(Soldier, it.soldier_id)
-        # snapshot the state at publishing time (it may have changed since the draft was made)
+        # snapshot the state at approval time (it may have changed since the draft was made)
         it.old_rank_id, it.old_position_id, it.old_unit_id = s.current_rank_id, s.current_position_id, s.current_unit_id
         it.old_rank_date, it.old_position_date = s.rank_date, s.position_date
         it.old_unit_date, it.old_from_unit_text = s.unit_transfer_date, s.from_unit_text
@@ -420,15 +452,13 @@ def publish_decision(decision_id: int, request: Request, payload: PublishIn | No
                     old_position=it.old_position_id, new_position=it.new_position_id,
                     old_unit=it.old_unit_id, new_unit=it.new_unit_id, decision_id=d.id,
                     note=f"{DECISION_KINDS[d.kind]} លេខ {d.decision_no}")
-    _move(db, d, user, "publish", "published", payload.comment)
     d.published_by, d.published_at = user.id, datetime.now()
-    return _done(db, user, d, "publish", request)
 
 
 @router.post("/{decision_id}/cancel")
 def cancel_decision(decision_id: int, request: Request, payload: WorkflowStepIn | None = None,
                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Revert a published decision (only if nothing newer has changed the soldiers since)."""
+    """Revert an approved decision (only if nothing newer has changed the soldiers since)."""
     d = _act(db, user, decision_id, "cancel")
     for it in d.items:
         s = db.get(Soldier, it.soldier_id)

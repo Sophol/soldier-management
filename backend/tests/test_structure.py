@@ -1,6 +1,6 @@
 """Features from the updated structure spec (001រចនាសម្ព័ន្ធ (2).txt)."""
 
-from tests.test_flow import API, _lookups, _soldier, _units, publish
+from tests.test_flow import API, _lookups, _soldier, _units, approve_all
 
 
 def _transfer(c, body_items, no="S-1", **kw):
@@ -20,9 +20,17 @@ def test_staffing_table_quota_and_rank_warnings(admin):
     assert r.status_code == 201, r.text
     up = r.json()
     assert (up["filled"], up["vacant"]) == (1, 0)
-    # moving s2 into the full position warns twice: quota reached and rank below the minimum
-    d = _transfer(admin, [{"soldier_id": s2["id"], "new_unit_id": other["id"], "new_position_id": pos}]).json()
-    assert len(d["warnings"]) == 2
+    # moving s2 into the full position is refused: quota reached and rank below the minimum (New.txt §4)
+    r = _transfer(admin, [{"soldier_id": s2["id"], "new_unit_id": other["id"], "new_position_id": pos}])
+    assert r.status_code == 400 and "ពេញក្របខណ្ឌ" in r.json()["detail"] and "មិនស្រប" in r.json()["detail"]
+    # with room in the table and the right rank it is accepted; two soldiers into one vacancy are refused
+    admin.put(f"{API}/unit-positions/{up['id']}", json={**up, "quota": 2, "min_rank_id": None})
+    ok = _transfer(admin, [{"soldier_id": s2["id"], "new_unit_id": other["id"], "new_position_id": pos}], no="S-9")
+    assert ok.status_code == 201, ok.text
+    s3 = _soldier(admin, lk, unit["id"], mid="TEST-ST3", national_id="TEST-NID-ST3")
+    both = _transfer(admin, [{"soldier_id": sid, "new_unit_id": other["id"], "new_position_id": pos}
+                             for sid in (s2["id"], s3["id"])], no="S-10")
+    assert both.status_code == 400
     # min rank above max rank is rejected
     bad = admin.put(f"{API}/unit-positions/{up['id']}", json={**up, "min_rank_id": ranks[0]["id"], "max_rank_id": ranks[-1]["id"]})
     assert bad.status_code == 400
@@ -35,7 +43,7 @@ def test_transfer_can_promote(admin):
     s = _soldier(admin, lk, unit["id"])
     higher = lk["ranks"][-4]["id"]
     d = _transfer(admin, [{"soldier_id": s["id"], "new_unit_id": other["id"], "new_rank_id": higher}]).json()
-    publish(admin, d["id"])
+    approve_all(admin, d["id"])
     after = admin.get(f"{API}/soldiers/{s['id']}").json()
     assert (after["current_unit_id"], after["current_rank_id"], after["rank_date"]) == (other["id"], higher, "2025-01-01")
     # a lower rank in a transfer is still refused

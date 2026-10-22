@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import http from '@/api/http'
 import CrudPage from '@/components/CrudPage.vue'
@@ -8,6 +8,8 @@ import { lookupConfig } from '@/crud-configs'
 const route = useRoute()
 const categories = ref([])
 const category = ref(route.query.category || 'soldier_status')
+// the menu links straight to a category (ផ្នែក, កម្រិតវប្បធម៌): follow the URL when it changes
+watch(() => route.query.category, (c) => { if (c) category.value = c })
 
 onMounted(async () => { categories.value = (await http.get('/meta/lookup-categories')).data })
 

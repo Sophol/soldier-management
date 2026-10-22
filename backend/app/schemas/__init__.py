@@ -115,6 +115,7 @@ class RankIn(In):
     short_kh: str | None = None
     sort_order: int = 0
     min_years_to_next: int | None = Field(default=None, ge=0, le=50)
+    min_years_combat: int | None = Field(default=None, ge=0, le=50)
     branch: Literal["army", "navy", "all"] = "army"
     quota: int | None = Field(default=None, ge=0)
     retirement_age: int | None = Field(default=None, ge=18, le=80)
@@ -129,6 +130,7 @@ class NamedIn(In):
 
 
 class PositionIn(NamedIn):
+    parent_id: int | None = None
     grade: int | None = None
     salary: float | None = Field(default=None, ge=0)
     sort_order: int = 0
@@ -136,6 +138,7 @@ class PositionIn(NamedIn):
 
 class SpecialtyIn(NamedIn):
     category: Literal["military", "civil"] = "military"
+    section_id: int | None = None
 
 
 class UnitPositionIn(In):
@@ -204,6 +207,8 @@ class SoldierIn(In):
     unit_transfer_date: date | None = None
     from_unit_text: str | None = None
     enlistment_date: date | None = None
+    service_track: Literal["admin", "combat"] = "admin"
+    establishment_no: str | None = None
     status_id: int | None = None
     education_level_id: int | None = None
     specialty_id: int | None = None
@@ -230,6 +235,7 @@ class DocumentInIn(In):
     received_date: date | None = None
     document_type_id: int | None = None
     from_unit: str | None = None
+    from_unit_id: int | None = None
     status: str = "received"
     remarks: str | None = None
 
@@ -272,11 +278,11 @@ class WorkflowStepIn(In):
     comment: str | None = None  # opinion; required when returning or rejecting
 
 
-class PublishIn(In):
+class ApproveIn(WorkflowStepIn):
+    # used only by the director's final approval
     decision_no: str | None = None  # the signed number (defaults to the outgoing letter number)
     decision_date: date | None = None
     outgoing_document_id: int | None = None  # an outgoing letter already registered; else one is created
-    comment: str | None = None
 
 
 # ---------- training & records ----------
@@ -291,6 +297,7 @@ class TrainingCourseIn(In):
     name: str
     course_type: Literal["long", "short"]
     level: Literal["basic", "refresher"] = "basic"
+    sector: Literal["military", "civil"] = "military"
     specialty_id: int | None = None
     institution: str | None = None
     country_id: int | None = None
@@ -320,7 +327,7 @@ class AwardIn(In):
 
 class RetirementIn(In):
     soldier_id: int
-    type: Literal["pension", "category2"]
+    type: Literal["pension", "voluntary", "category2"]
     decision_no: str | None = None
     decision_date: date | None = None
     effective_date: date
@@ -367,6 +374,9 @@ class ConscriptIn(In):
     spouse_name: str | None = None
     children_count: int = Field(default=0, ge=0, le=50)
     education_level_id: int | None = None
+    specialty_id: int | None = None
+    blood_type_id: int | None = None
+    spouse_job_id: int | None = None
     profession: str | None = None
     languages: str | None = None
     driving_license: str | None = None

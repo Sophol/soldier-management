@@ -40,7 +40,10 @@ class Rank(TimestampMixin, Base):
     short_kh: Mapped[str | None] = mapped_column(String(50))
     # higher value = higher rank; used to validate promotions
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    # years in this rank before the next promotion: administrative service (សេវារដ្ឋបាល) and combat
+    # operations (ប្រតិបត្តិការសឹក); a soldier's service_track picks which applies
     min_years_to_next: Mapped[int | None] = mapped_column(SmallInteger)
+    min_years_combat: Mapped[int | None] = mapped_column(SmallInteger)
     branch: Mapped[str] = mapped_column(String(10), default="army")  # army ជើងគោក / navy ជើងទឹក / all
     quota: Mapped[int | None] = mapped_column(Integer)  # authorised number of soldiers in this rank
     retirement_age: Mapped[int | None] = mapped_column(SmallInteger)  # overrides the per-gender setting
@@ -50,9 +53,15 @@ class Rank(TimestampMixin, Base):
     rank_class: Mapped[RankClass] = relationship()
 
 
+# position levels (New.txt §1): មុខតំណែង > មុខតំណែងរង > មុខតំណែងចំណុះផ្ទាល់
+POSITION_LEVELS = {1: "មុខតំណែង", 2: "មុខតំណែងរង", 3: "មុខតំណែងចំណុះផ្ទាល់"}
+
+
 class Position(TimestampMixin, Base):
     __tablename__ = "positions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("positions.id", ondelete="RESTRICT"), index=True)
+    level: Mapped[int] = mapped_column(SmallInteger, default=1)
     name_kh: Mapped[str] = mapped_column(String(255))
     name_en: Mapped[str | None] = mapped_column(String(255))
     grade: Mapped[int | None] = mapped_column(SmallInteger)
@@ -85,6 +94,7 @@ class Specialty(TimestampMixin, Base):
     name_kh: Mapped[str] = mapped_column(String(255))
     name_en: Mapped[str | None] = mapped_column(String(255))
     category: Mapped[str] = mapped_column(String(10), default="military")  # military យោធា / civil ស៊ីវិល
+    section_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"), index=True)  # ផ្នែក
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -108,6 +118,7 @@ LOOKUP_CATEGORIES = {
     "award_type": "ប្រភេទសរសើរ/គ្រឿងឥស្សរិយយស",
     "discipline_type": "ប្រភេទទណ្ឌកម្ម",
     "separation_reason": "មូលហេតុចេញពីជួរ",
+    "specialty_section": "ផ្នែក (ជំនាញឯកទេស)",
 }
 
 
