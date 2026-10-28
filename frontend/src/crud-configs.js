@@ -17,8 +17,16 @@ const soldierCols = [
   { key: 'unit_name', label: 'អង្គភាព', minWidth: 150 },
 ]
 const soldierField = { key: 'soldier_id', label: 'យោធិន', type: 'soldier', required: true }
-const RETIREMENT_TYPES = [{ value: 'pension', label: 'សោធននិវត្តន៍ (គ្រប់អាយុ)' },
-  { value: 'voluntary', label: 'ស្ម័គ្រចិត្តចូលនិវត្តន៍' }, { value: 'category2', label: 'យោធិនប្រភេទ២' }]
+const options = (obj) => Object.entries(obj).map(([value, label]) => ({ value, label }))
+const RETIREMENT_TYPES = options({ pension: 'សោធននិវត្តន៍ (គ្រប់អាយុ)', voluntary: 'ស្ម័គ្រចិត្តចូលនិវត្តន៍',
+  disability: 'ពិការ', death: 'ស្លាប់', category2: 'យោធិនប្រភេទ២' })
+const CASE_STATUS = options({ submitted: 'ដាក់ឯកសារ', processing: 'កំពុងដំណើរការ', done: 'រួចរាល់' })
+const DISCIPLINE_STATUS = options({ active: 'កំពុងអនុវត្ត', expired: 'ផុតកំណត់', cancelled: 'លុបចោល' })
+const CARD_STATUS = options({ issued: 'ចេញរួច', pending: 'មិនទាន់ចេញ', expired: 'ផុតកំណត់', lost: 'បាត់', replaced: 'ជំនួស' })
+const EXPIRING = [30, 60, 90].map((d) => ({ value: d, label: `ក្នុង ${d} ថ្ងៃ` }))
+const STATUS_TAG = { active: 'danger', expired: 'info', cancelled: 'info', issued: 'success', pending: 'warning', lost: 'danger',
+  replaced: 'info', submitted: 'warning', processing: 'primary', done: 'success' }
+const yearFilter = { key: 'year', label: 'ឆ្នាំ', type: 'year', width: '120px' }
 const POSITION_LEVELS = [{ value: 1, label: 'មុខតំណែង' }, { value: 2, label: 'មុខតំណែងរង' }, { value: 3, label: 'មុខតំណែងចំណុះផ្ទាល់' }]
 // a position can sit under a level-1 or level-2 position, never under itself
 const parentPositions = (row, lk) => lk.list('positions')
@@ -66,7 +74,7 @@ export const configs = {
     }, { ...activeField, span: 12 }],
   },
   docIn: {
-    title: 'ឯកសារចូល', endpoint: '/documents/incoming', module: 'doc_in', attachments: 'doc_in', attachmentTitle: 'incoming_no', formWidth: '860px',
+    title: 'ឯកសារចូល', endpoint: '/documents/incoming', auditFilters: true, module: 'doc_in', attachments: 'doc_in', attachmentTitle: 'incoming_no', formWidth: '860px',
     columns: [
       { key: 'incoming_no', label: 'លេខឯកសារចូល', width: 130 },
       { key: 'subject', label: 'ខ្លឹមសារឯកសារ', minWidth: 260 },
@@ -88,7 +96,7 @@ export const configs = {
     ],
   },
   docOut: {
-    title: 'ឯកសារចេញ', endpoint: '/documents/outgoing', module: 'doc_out', attachments: 'doc_out', attachmentTitle: 'outgoing_no', formWidth: '860px',
+    title: 'ឯកសារចេញ', endpoint: '/documents/outgoing', auditFilters: true, module: 'doc_out', attachments: 'doc_out', attachmentTitle: 'outgoing_no', formWidth: '860px',
     columns: [
       { key: 'outgoing_no', label: 'លេខ', width: 110 },
       { key: 'subject', label: 'ខ្លឹមសារឯកសារ', minWidth: 240 },
@@ -112,42 +120,59 @@ export const configs = {
     ],
   },
   discipline: {
-    title: 'ការងារវិន័យ និងទណ្ឌកម្ម', endpoint: '/discipline', module: 'discipline', attachments: 'discipline', formWidth: '720px',
+    title: 'ការងារវិន័យ និងទណ្ឌកម្ម', endpoint: '/discipline', auditFilters: true, module: 'discipline', attachments: 'discipline', formWidth: '720px',
     columns: [...soldierCols,
       { key: 'discipline_type_name', label: 'ប្រភេទទណ្ឌកម្ម', width: 150 },
+      { key: 'level', label: 'កម្រិត', width: 100 },
       { key: 'decision_no', label: 'លេខលិខិត', width: 110 },
       { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំ', type: 'date', width: 110 },
-      { key: 'end_date', label: 'ផុតកំណត់', type: 'date', width: 110 }],
-    filters: [{ key: 'discipline_type_id', label: 'ប្រភេទ', type: 'select', options: 'lookup:discipline_type' }, ...dateRange],
+      { key: 'end_date', label: 'ផុតកំណត់', type: 'date', width: 110 },
+      { key: 'decided_by', label: 'អ្នកសម្រេច', width: 130 },
+      { key: 'status_name', label: 'ស្ថានភាព', width: 120, tag: (r) => STATUS_TAG[r.status] }],
+    filters: [{ key: 'discipline_type_id', label: 'ប្រភេទ', type: 'select', options: 'lookup:discipline_type' },
+      { key: 'status', label: 'ស្ថានភាព', type: 'select', width: '150px', options: DISCIPLINE_STATUS },
+      { key: 'level', label: 'កម្រិត', width: '120px' }, yearFilter, ...dateRange],
     fields: [soldierField,
       { key: 'discipline_type_id', label: 'ប្រភេទទណ្ឌកម្ម', type: 'select', options: 'lookup:discipline_type', span: 12 },
       { key: 'decision_no', label: 'លេខលិខិត/សេចក្ដីសម្រេច', span: 12 },
       { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំលិខិត', type: 'date', span: 8 },
       { key: 'start_date', label: 'ចាប់ពីថ្ងៃ', type: 'date', span: 8 },
       { key: 'end_date', label: 'ដល់ថ្ងៃ', type: 'date', span: 8 },
+      { key: 'level', label: 'កម្រិតទោស', span: 8 },
+      { key: 'decided_by', label: 'អ្នកសម្រេច', span: 10 },
+      { key: 'cancelled', label: 'លុបចោល', type: 'switch', default: false, span: 6 },
       { key: 'reason', label: 'មូលហេតុ', type: 'textarea' }],
   },
   awards: {
-    title: 'ការងារសរសើរ និងគ្រឿងឥស្សរិយយស', endpoint: '/awards', module: 'awards', attachments: 'award', formWidth: '720px',
+    title: 'ការងារសរសើរ និងគ្រឿងឥស្សរិយយស', endpoint: '/awards', auditFilters: true, module: 'awards', attachments: 'award', formWidth: '720px',
     columns: [...soldierCols,
       { key: 'award_type_name', label: 'ប្រភេទ', width: 160 },
-      { key: 'decision_no', label: 'លេខលិខិត', width: 110 },
-      { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំ', type: 'date', width: 110 }],
-    filters: [{ key: 'award_type_id', label: 'ប្រភេទ', type: 'select', options: 'lookup:award_type' }, ...dateRange],
+      { key: 'level', label: 'កម្រិត/ថ្នាក់', width: 120 },
+      { key: 'decision_no', label: 'លេខសេចក្ដីសម្រេច', width: 130 },
+      { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំ', type: 'date', width: 110 },
+      { key: 'awarded_by', label: 'អ្នកផ្ដល់', width: 140 }],
+    filters: [{ key: 'award_type_id', label: 'ប្រភេទ', type: 'select', options: 'lookup:award_type' },
+      { key: 'level', label: 'កម្រិត/ថ្នាក់', width: '130px' }, { key: 'awarded_by', label: 'អ្នកផ្ដល់', width: '150px' },
+      yearFilter, ...dateRange],
     fields: [soldierField,
       { key: 'award_type_id', label: 'ប្រភេទ (ប័ណ្ណសរសើរ/លិខិតសរសើរ/មេដាយ)', type: 'select', options: 'lookup:award_type', span: 12 },
       { key: 'decision_no', label: 'លេខលិខិត', span: 6 },
       { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំ', type: 'date', span: 6 },
+      { key: 'level', label: 'កម្រិត/ថ្នាក់', span: 12 },
+      { key: 'awarded_by', label: 'អ្នកផ្ដល់', span: 12 },
       { key: 'reason', label: 'ខ្លឹមសារ/មូលហេតុ', type: 'textarea' }],
   },
   retirement: {
-    title: 'សោធននិវត្តន៍ និងយោធិនប្រភេទ២', endpoint: '/retirements', module: 'retirement', attachments: 'retirement', formWidth: '720px',
+    title: 'សោធននិវត្តន៍ និងយោធិនប្រភេទ២', endpoint: '/retirements', auditFilters: true, module: 'retirement', attachments: 'retirement', formWidth: '720px',
     columns: [...soldierCols,
       { key: 'type_name', label: 'ប្រភេទ', width: 140 },
       { key: 'decision_no', label: 'លេខលិខិត', width: 110 },
       { key: 'effective_date', label: 'ចូលជាធរមាន', type: 'date', width: 120 },
-      { key: 'pension_amount', label: 'ប្រាក់សោធន', width: 110 }],
-    filters: [{ key: 'type', label: 'ប្រភេទ', type: 'select', options: RETIREMENT_TYPES }, ...dateRange],
+      { key: 'pension_amount', label: 'ប្រាក់សោធន', width: 110 },
+      { key: 'case_status_name', label: 'សំណុំរឿង', width: 130, tag: (r) => STATUS_TAG[r.case_status] }],
+    filters: [{ key: 'type', label: 'ប្រភេទ', type: 'select', options: RETIREMENT_TYPES },
+      { key: 'case_status', label: 'ស្ថានភាពសំណុំរឿង', type: 'select', width: '150px', options: CASE_STATUS },
+      { key: 'year', label: 'ឆ្នាំនិវត្ត', type: 'year', width: '120px' }, ...dateRange],
     fields: [soldierField,
       { key: 'type', label: 'ប្រភេទ', type: 'select', required: true, default: 'pension', span: 12,
         options: RETIREMENT_TYPES },
@@ -155,10 +180,33 @@ export const configs = {
       { key: 'decision_no', label: 'លេខលិខិត', span: 8 },
       { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំលិខិត', type: 'date', span: 8 },
       { key: 'pension_amount', label: 'ប្រាក់សោធន (រៀល)', type: 'number', span: 8 },
+      { key: 'case_status', label: 'ស្ថានភាពសំណុំរឿង', type: 'select', required: true, default: 'submitted', options: CASE_STATUS, span: 12 },
       { key: 'notes', label: 'កំណត់សម្គាល់', type: 'textarea' }],
   },
+  idCards: {
+    title: 'ការងារអត្តសញ្ញាណប័ណ្ណយោធិន', endpoint: '/military-cards', auditFilters: true, module: 'id_cards', attachments: 'id_card',
+    attachmentTitle: 'card_no', formWidth: '720px',
+    columns: [...soldierCols,
+      { key: 'card_no', label: 'លេខប័ណ្ណ', width: 120 },
+      { key: 'issue_date', label: 'ថ្ងៃចេញ', type: 'date', width: 110 },
+      { key: 'expiry_date', label: 'ថ្ងៃផុតកំណត់', type: 'date', width: 120 },
+      { key: 'days_left', label: 'នៅសល់ (ថ្ងៃ)', width: 110, value: (r) => (r.status === 'issued' ? r.days_left : null) },
+      { key: 'status_name', label: 'ស្ថានភាព', width: 120, tag: (r) => STATUS_TAG[r.status] || 'info' }],
+    filters: [{ key: 'status', label: 'ស្ថានភាព', type: 'select', width: '140px', options: CARD_STATUS },
+      { key: 'expiring_within', label: 'ផុតកំណត់', type: 'select', width: '140px', options: EXPIRING },
+      { key: 'date_from', label: 'ចេញពី', type: 'date', width: '150px' }, { key: 'date_to', label: 'ដល់', type: 'date', width: '150px' }],
+    fields: [soldierField,
+      { key: 'card_no', label: 'លេខប័ណ្ណ', span: 12 },
+      { key: 'status', label: 'ស្ថានភាព', type: 'select', required: true, default: 'pending', span: 12,
+        options: CARD_STATUS.filter((o) => o.value !== 'expired') },
+      { key: 'issue_date', label: 'ថ្ងៃចេញ', type: 'date', span: 12 },
+      { key: 'expiry_date', label: 'ថ្ងៃផុតកំណត់', type: 'date', span: 12 },
+      { key: 'notes', label: 'កំណត់សម្គាល់', type: 'textarea' }],
+    // an expired card is stored as issued (expired is computed from the date)
+    beforeSave: (p) => { if (p.status === 'expired') p.status = 'issued' },
+  },
   separation: {
-    title: 'យោធិនចេញពីជួរ', endpoint: '/separations', module: 'separation', attachments: 'separation', formWidth: '720px',
+    title: 'យោធិនចេញពីជួរ', endpoint: '/separations', auditFilters: true, module: 'separation', attachments: 'separation', formWidth: '720px',
     columns: [...soldierCols,
       { key: 'reason_name', label: 'មូលហេតុ', width: 150 },
       { key: 'decision_no', label: 'លេខលិខិត', width: 110 },

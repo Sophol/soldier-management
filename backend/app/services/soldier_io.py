@@ -32,6 +32,9 @@ FIELDS = [
     Field("gender", "ភេទ", "gender", True),
     Field("date_of_birth", "ថ្ងៃខែឆ្នាំកំណើត", "date"),
     Field("national_id", "លេខអត្តសញ្ញាណប័ណ្ណសញ្ជាតិខ្មែរ", "text"),
+    Field("national_id_expiry", "ថ្ងៃផុតកំណត់អត្តសញ្ញាណប័ណ្ណ", "date"),
+    Field("nationality", "សញ្ជាតិ", "text"),
+    Field("ethnicity", "ជនជាតិ", "text"),
     Field("phone", "លេខទូរសព្ទ", "text"),
     Field("current_rank_id", "ឋានន្តរស័ក្តិ", "rank"),
     Field("rank_date", "ថ្ងៃខែឆ្នាំឡើងស័ក្តិ", "date"),
@@ -55,6 +58,8 @@ FIELDS = [
     Field("mother_name", "ឈ្មោះម្ដាយ", "text"),
     Field("birth_place_text", "ទីកន្លែងកំណើត", "text"),
     Field("current_address_text", "ទីលំនៅបច្ចុប្បន្ន", "text"),
+    Field("voting_place", "ទីបោះឆ្នោត", "text"),
+    Field("dependents_count", "ចំនួនអ្នកក្នុងបន្ទុក", "int"),
     Field("notes", "ប្រវត្តិផ្សេងៗ", "text"),
 ]
 BY_KEY = {f.key: f for f in FIELDS}

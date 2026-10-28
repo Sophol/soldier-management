@@ -3,7 +3,7 @@ import http from '@/api/http'
 
 /** All dropdown lists (ranks, positions, lookups...) and the unit tree, cached. */
 export const useLookups = defineStore('lookups', {
-  state: () => ({ data: {}, unitTree: [], loaded: false }),
+  state: () => ({ data: {}, unitTree: [], loaded: false, users: null }),
   getters: {
     list: (s) => (key) => s.data[key] || [],
     unitMap: (s) => {
@@ -20,6 +20,11 @@ export const useLookups = defineStore('lookups', {
       this.data = lk.data
       this.unitTree = tree.data
       this.loaded = true
+    },
+    /** Users for the "entered by" (អ្នកបញ្ចូល) filters, fetched once. */
+    async loadUsers() {
+      if (!this.users) this.users = (await http.get('/users/options')).data
+      return this.users
     },
     refresh() {
       return this.load(true)

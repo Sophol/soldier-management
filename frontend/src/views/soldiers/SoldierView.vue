@@ -66,6 +66,9 @@ const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))
             <el-descriptions-item label="ថ្ងៃខែឆ្នាំកំណើត">{{ fmtDate(s.date_of_birth) }}</el-descriptions-item>
             <el-descriptions-item label="អត្តសញ្ញាណប័ណ្ណ">{{ s.national_id }}</el-descriptions-item>
             <el-descriptions-item label="ទូរសព្ទ">{{ s.phone }}</el-descriptions-item>
+            <el-descriptions-item label="ផុតកំណត់អត្តសញ្ញាណប័ណ្ណ">{{ fmtDate(s.national_id_expiry) }}</el-descriptions-item>
+            <el-descriptions-item label="សញ្ជាតិ">{{ s.nationality }}</el-descriptions-item>
+            <el-descriptions-item label="ជនជាតិ">{{ s.ethnicity }}</el-descriptions-item>
             <el-descriptions-item label="ទីកន្លែងកំណើត" :span="3">{{ s.birth_village_text || s.birth_place_text }}</el-descriptions-item>
             <el-descriptions-item label="ទីលំនៅបច្ចុប្បន្ន" :span="3">{{ [s.current_address_text, s.current_village_text].filter(Boolean).join(' ') }}</el-descriptions-item>
             <el-descriptions-item label="ថ្ងៃចូលបម្រើទ័ព">{{ fmtDate(s.enlistment_date) }}</el-descriptions-item>
@@ -88,6 +91,10 @@ const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))
             <el-descriptions-item label="ចំនួនកូន">{{ num(s.children_count) }}</el-descriptions-item>
             <el-descriptions-item label="ឈ្មោះឪពុក">{{ s.father_name }}</el-descriptions-item>
             <el-descriptions-item label="ឈ្មោះម្ដាយ">{{ s.mother_name }}</el-descriptions-item>
+            <el-descriptions-item label="ស្ថានភាពលំនៅ">{{ s.housing_status_name }}</el-descriptions-item>
+            <el-descriptions-item label="អ្នកក្នុងបន្ទុក">{{ num(s.dependents_count) }}</el-descriptions-item>
+            <el-descriptions-item label="ជួលមូលដ្ឋាន" :span="2">{{ s.base_village_text }}</el-descriptions-item>
+            <el-descriptions-item label="ទីបោះឆ្នោត" :span="3">{{ [s.voting_place, s.voting_village_text].filter(Boolean).join(' — ') }}</el-descriptions-item>
             <el-descriptions-item label="ប្រវត្តិផ្សេងៗ" :span="3"><div style="white-space: pre-line">{{ s.notes }}</div></el-descriptions-item>
           </el-descriptions>
         </el-tab-pane>

@@ -25,6 +25,7 @@ FILE_OWNERS = {
     "award": "awards",
     "retirement": "retirement",
     "separation": "separation",
+    "id_card": "id_cards",
     "conscript": "conscripts",  # scanned record (ស្កេនប្រវត្តិរូប), exemption papers
 }
 

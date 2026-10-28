@@ -1,9 +1,12 @@
 """Auth, users, roles & permissions, system settings, audit log."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -19,8 +22,18 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models import AuditLog, Permission, Role, Setting, User
-from app.schemas import ChangePasswordIn, LoginIn, RefreshIn, RoleIn, RolePermissionsIn, SettingsIn, UserIn
+from app.models import AuditLog, Permission, Role, SavedFilter, Setting, User
+from app.schemas import (
+    ChangePasswordIn,
+    ExportTableIn,
+    LoginIn,
+    RefreshIn,
+    RoleIn,
+    RolePermissionsIn,
+    SavedFilterIn,
+    SettingsIn,
+    UserIn,
+)
 from app.services.common import audit, delete_storage_file, paginate, save_upload, storage_file, to_dict
 
 router = APIRouter()
@@ -105,6 +118,13 @@ def list_users(page: int = Query(1, ge=1), size: int = Query(20, le=200), q: str
         stmt = stmt.where(or_(User.username.ilike(f"%{q}%"), User.full_name.ilike(f"%{q}%")))
     items, total = paginate(db, stmt.order_by(User.id), page, size)
     return {"items": [user_out(u) for u in items], "total": total, "page": page, "size": size}
+
+
+@router.get("/users/options", tags=["users"])
+def user_options(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """Names only, for the "entered by" (អ្នកបញ្ចូល) filter of every list."""
+    return [{"id": u.id, "full_name": u.full_name, "username": u.username}
+            for u in db.scalars(select(User).order_by(User.full_name))]
 
 
 def _apply_user(db: Session, u: User, data: UserIn, actor: User) -> None:
@@ -320,7 +340,8 @@ def get_setting(db: Session, key: str, default: str = "") -> str:
 
 @router.get("/audit-logs", tags=["audit"])
 def audit_logs(page: int = Query(1, ge=1), size: int = Query(50, le=200), table: str | None = None,
-               user_id: int | None = None, action: str | None = None,
+               user_id: int | None = None, action: str | None = None, record_id: str | None = None,
+               date_from: date | None = None, date_to: date | None = None,
                db: Session = Depends(get_db), _: User = Depends(require("audit", "view"))):
     stmt = select(AuditLog)
     if table:
@@ -329,8 +350,90 @@ def audit_logs(page: int = Query(1, ge=1), size: int = Query(50, le=200), table:
         stmt = stmt.where(AuditLog.user_id == user_id)
     if action:
         stmt = stmt.where(AuditLog.action == action)
+    if record_id:
+        stmt = stmt.where(AuditLog.record_id == record_id)
+    if date_from:
+        stmt = stmt.where(AuditLog.created_at >= date_from)
+    if date_to:  # the whole last day
+        stmt = stmt.where(AuditLog.created_at < date_to + timedelta(days=1))
     items, total = paginate(db, stmt.order_by(AuditLog.id.desc()), page, size)
     return {
         "items": [{**to_dict(a), "username": a.user.username if a.user else None} for a in items],
         "total": total, "page": page, "size": size,
     }
+
+
+# ---------------- saved filters & export by filter ----------------
+
+def saved_filter_out(f: SavedFilter, user: User) -> dict:
+    return {"id": f.id, "module": f.module, "name": f.name, "params": f.params, "shared": f.shared,
+            "owner": f.user.full_name if f.user else None, "mine": f.user_id == user.id}
+
+
+@router.get("/saved-filters", tags=["saved filters"])
+def list_saved_filters(module: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The user's own filters of a list, then the ones other users shared."""
+    rows = db.scalars(select(SavedFilter).where(SavedFilter.module == module,
+                                                or_(SavedFilter.user_id == user.id, SavedFilter.shared.is_(True)))
+                      .order_by(SavedFilter.name))
+    return sorted((saved_filter_out(f, user) for f in rows), key=lambda x: not x["mine"])
+
+
+@router.post("/saved-filters", tags=["saved filters"], status_code=201)
+def save_filter(payload: SavedFilterIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Saving under a name the user already used for this list replaces that filter."""
+    params = {k: v for k, v in payload.params.items() if v not in (None, "", [])}
+    f = db.scalar(select(SavedFilter).where(SavedFilter.user_id == user.id, SavedFilter.module == payload.module,
+                                            SavedFilter.name == payload.name))
+    if not f:
+        f = SavedFilter(user_id=user.id, module=payload.module, name=payload.name)
+        db.add(f)
+    f.params, f.shared = params, payload.shared
+    db.commit()
+    db.refresh(f)
+    return saved_filter_out(f, user)
+
+
+@router.delete("/saved-filters/{filter_id}", tags=["saved filters"])
+def delete_saved_filter(filter_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    f = db.get(SavedFilter, filter_id)
+    if not f:
+        raise HTTPException(404, "រកមិនឃើញ")
+    if f.user_id != user.id and not user.role.is_super:
+        raise HTTPException(403, "អាចលុបបានតែ Filter របស់ខ្លួនឯងប៉ុណ្ណោះ")
+    db.delete(f)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/export/table", tags=["export"])
+def export_table(payload: ExportTableIn, request: Request, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Excel of a list exactly as filtered on screen. The page sends the rows it loaded through the module's own
+    (permission- and scope-checked) list endpoint; this only needs the module's export permission."""
+    if not user.can(payload.module, "export"):
+        raise HTTPException(403, "គ្មានសិទ្ធិនាំចេញ")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "data"
+    ncol = len(payload.columns) + 1
+    ws.append([payload.title])
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(ncol, 1))
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws.append(["ល.រ", *payload.columns])
+    for c in ws[2]:
+        c.font = Font(bold=True)
+    for i, row in enumerate(payload.rows, 1):
+        ws.append([i, *row])
+    for col in ws.iter_cols(min_row=2, max_row=2):
+        ws.column_dimensions[col[0].column_letter].width = 8 if col[0].column == 1 else 22
+    ws.freeze_panes = "A3"
+    audit(db, user, "export", table=payload.module, record_id="*", request=request,
+          before={"title": payload.title, "rows": len(payload.rows)})
+    db.commit()
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": "attachment; filename=export.xlsx"})

@@ -104,7 +104,7 @@ def years_to_next_rank(s: Soldier) -> int | None:
 
 
 # statuses of soldiers who have left the strength (retirement, category 2, separation)
-INACTIVE_STATUS_CODES = ("retired", "category2", "separated")
+INACTIVE_STATUS_CODES = ("retired", "category2", "separated", "deceased")
 
 
 def is_inactive(db: Session, s: Soldier) -> bool:

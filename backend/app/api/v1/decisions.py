@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.api.crud import audit_filters
 from app.api.v1.documents import allocate_outgoing_number
 from app.api.v1.system import get_setting
 from app.core.database import get_db
@@ -45,7 +46,7 @@ from app.models import (
 )
 from app.models.decision import DECISION_KINDS
 from app.schemas import ApproveIn, DecisionIn, WorkflowStepIn
-from app.services.common import audit, names_by_id, paginate, scope_unit_ids, to_dict
+from app.services.common import audit, names_by_id, paginate, scope_unit_ids, to_dict, unit_subtree_ids
 from app.services.soldier import add_history, add_movement, diff_ym, is_inactive, years_to_next_rank
 from app.services.staffing import staffing_problems
 
@@ -95,6 +96,7 @@ def decision_out(db: Session, d: Decision, with_items: bool = True, user: User |
            "status_name": DECISION_STATUSES.get(d.status, d.status),
            "overdue": d.status in IN_PROGRESS and d.status_changed_at is not None and d.status_changed_at < overdue_before,
            "actions": allowed_actions(user, d) if user else [],
+           "created_by_name": db.scalar(select(User.full_name).where(User.id == d.created_by)) if d.created_by else None,
            "incoming_no": db.scalar(select(DocumentIncoming.incoming_no).where(
                DocumentIncoming.id == d.incoming_document_id)) if d.incoming_document_id else None,
            "outgoing_no": db.scalar(select(DocumentOutgoing.outgoing_no).where(
@@ -220,10 +222,16 @@ def _validate_items(db: Session, user: User, payload: DecisionIn) -> tuple[list[
 
 
 @router.get("")
-def list_decisions(kind: str, page: int = Query(1, ge=1), size: int = Query(20, le=200), q: str | None = None,
-                   status: str | None = None, date_from: str | None = None, date_to: str | None = None,
-                   waiting: bool = False, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """waiting=true: only decisions waiting at a step this user can act on (their inbox)."""
+def list_decisions(request: Request, kind: str, page: int = Query(1, ge=1), size: int = Query(20, le=200),
+                   q: str | None = None, status: str | None = None, date_from: str | None = None,
+                   date_to: str | None = None, effective_from: str | None = None, effective_to: str | None = None,
+                   waiting: bool = False, overdue: bool = False,
+                   old_rank_id: int | None = None, new_rank_id: int | None = None, old_position_id: int | None = None,
+                   new_position_id: int | None = None, old_unit_id: int | None = None, new_unit_id: int | None = None,
+                   db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """waiting=true: only decisions waiting at a step this user can act on (their inbox); overdue=true: still in the
+    workflow and waiting at one step for too long. old_/new_ rank, position, unit: any soldier of the decision
+    (units include their sub-units). created_by = the submitter (អ្នកដាក់សំណើ)."""
     _need(user, kind, "view")
     stmt = select(Decision).where(Decision.kind == kind, Decision.deleted_at.is_(None))
     visible = _in_scope_condition(db, user)
@@ -242,6 +250,20 @@ def list_decisions(kind: str, page: int = Query(1, ge=1), size: int = Query(20, 
         stmt = stmt.where(Decision.decision_date >= date_from)
     if date_to:
         stmt = stmt.where(Decision.decision_date <= date_to)
+    if effective_from:
+        stmt = stmt.where(Decision.effective_date >= effective_from)
+    if effective_to:
+        stmt = stmt.where(Decision.effective_date <= effective_to)
+    if overdue:
+        stmt = stmt.where(Decision.status.in_(IN_PROGRESS), Decision.status_changed_at < overdue_cutoff(db))
+    conds = [col == val for col, val in ((DecisionItem.old_rank_id, old_rank_id), (DecisionItem.new_rank_id, new_rank_id),
+                                         (DecisionItem.old_position_id, old_position_id),
+                                         (DecisionItem.new_position_id, new_position_id)) if val]
+    conds += [col.in_(unit_subtree_ids(db, val)) for col, val in ((DecisionItem.old_unit_id, old_unit_id),
+                                                                   (DecisionItem.new_unit_id, new_unit_id)) if val]
+    if conds:  # all on the same soldier line (e.g. from this rank to that rank)
+        stmt = stmt.where(Decision.id.in_(select(DecisionItem.decision_id).where(*conds)))
+    stmt = audit_filters(stmt, Decision, request.query_params)
     items, total = paginate(db, stmt.order_by(Decision.decision_date.desc(), Decision.id.desc()), page, size)
     cutoff = overdue_cutoff(db)
     return {"items": [decision_out(db, d, with_items=False, user=user, overdue_before=cutoff) for d in items],

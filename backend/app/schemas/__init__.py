@@ -193,6 +193,9 @@ class SoldierIn(In):
     gender: Literal["M", "F"]
     date_of_birth: date | None = None
     national_id: str | None = None
+    national_id_expiry: date | None = None
+    nationality: str | None = "ខ្មែរ"
+    ethnicity: str | None = None
     phone: str | None = None
     blood_type_id: int | None = None
     birth_village_id: int | None = None
@@ -220,6 +223,11 @@ class SoldierIn(In):
     children_count: int = Field(default=0, ge=0, le=50)
     father_name: str | None = None
     mother_name: str | None = None
+    base_village_id: int | None = None
+    voting_village_id: int | None = None
+    voting_place: str | None = None
+    housing_status: Literal["own", "rent", "stay"] | None = None
+    dependents_count: int = Field(default=0, ge=0, le=50)
     notes: str | None = None
     educations: list[EducationIn] = []
     languages: list[LanguageIn] = []
@@ -289,6 +297,7 @@ class ApproveIn(WorkflowStepIn):
 
 class ParticipantIn(In):
     soldier_id: int
+    status: Literal["studying", "completed", "dropped"] = "studying"
     result: str | None = None
     certificate_no: str | None = None
 
@@ -310,16 +319,21 @@ class TrainingCourseIn(In):
 class DisciplineIn(In):
     soldier_id: int
     discipline_type_id: int | None = None
+    level: str | None = None
     reason: str | None = None
     decision_no: str | None = None
     decision_date: date | None = None
+    decided_by: str | None = None
     start_date: date | None = None
     end_date: date | None = None
+    cancelled: bool = False
 
 
 class AwardIn(In):
     soldier_id: int
     award_type_id: int | None = None
+    level: str | None = None
+    awarded_by: str | None = None
     reason: str | None = None
     decision_no: str | None = None
     decision_date: date | None = None
@@ -327,7 +341,8 @@ class AwardIn(In):
 
 class RetirementIn(In):
     soldier_id: int
-    type: Literal["pension", "voluntary", "category2"]
+    type: Literal["pension", "voluntary", "disability", "death", "category2"]
+    case_status: Literal["submitted", "processing", "done"] = "submitted"
     decision_no: str | None = None
     decision_date: date | None = None
     effective_date: date
@@ -416,7 +431,36 @@ class ConscriptServiceIn(In):
     trainings: str | None = None
     awards_discipline: str | None = None
     order_no: str | None = None
+    service_type: Literal["duty", "reserve"] = "duty"
+    status: Literal["serving", "finished", "deferred"] = "serving"
+    reserve_unit_id: int | None = None
+    reserve_unit_text: str | None = None
+    post_service_status: str | None = None
 
 
 class SettingsIn(BaseModel):
     values: dict[str, str | None]
+
+
+class SavedFilterIn(In):
+    module: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=150)
+    params: dict
+    shared: bool = False
+
+
+class ExportTableIn(In):
+    """Rows already formatted for display by the list page (Export Excel by the current filter)."""
+    module: str
+    title: str = Field(max_length=200)
+    columns: list[str] = Field(max_length=100)
+    rows: list[list[str | int | float | None]] = Field(max_length=20000)
+
+
+class MilitaryCardIn(In):
+    soldier_id: int
+    card_no: str | None = None
+    status: Literal["issued", "pending", "lost", "replaced"] = "pending"
+    issue_date: date | None = None
+    expiry_date: date | None = None
+    notes: str | None = None

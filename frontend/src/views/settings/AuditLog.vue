@@ -1,20 +1,26 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import http from '@/api/http'
+import { useLookups } from '@/stores/lookups'
 import { fmtDateTime } from '@/utils/format'
 
 const rows = ref([])
 const total = ref(0)
 const loading = ref(false)
-const q = reactive({ page: 1, size: 50, table: '', action: '' })
+const q = reactive({ page: 1, size: 50, table: '', action: '', user_id: null, record_id: '', date_from: null, date_to: null })
 const ACTION_TYPE = { create: 'success', update: 'warning', delete: 'danger', approve: 'success', cancel: 'danger', login: 'info' }
+const ACTIONS = ['create', 'update', 'delete', 'submit', 'approve', 'return', 'reject', 'cancel', 'import', 'export', 'login']
+const users = ref([])
+const dates = computed({
+  get: () => (q.date_from || q.date_to ? [q.date_from, q.date_to] : null),
+  set: (v) => { q.date_from = v?.[0] || null; q.date_to = v?.[1] || null },
+})
 
 async function load() {
   loading.value = true
   try {
     const params = { page: q.page, size: q.size }
-    if (q.table) params.table = q.table
-    if (q.action) params.action = q.action
+    for (const k of ['table', 'action', 'user_id', 'record_id', 'date_from', 'date_to']) if (q[k]) params[k] = q[k]
     const { data } = await http.get('/audit-logs', { params })
     rows.value = data.items
     total.value = data.total
@@ -30,7 +36,10 @@ function changes(row) {
     .map((k) => `${k}: ${row.before[k] ?? '∅'} → ${row.after[k] ?? '∅'}`).join('\n')
 }
 
-onMounted(load)
+onMounted(async () => {
+  load()
+  users.value = await useLookups().loadUsers()
+})
 </script>
 
 <template>
@@ -39,10 +48,20 @@ onMounted(load)
     <el-card shadow="never" class="filter-card">
       <el-form inline @submit.prevent="q.page = 1; load()">
         <el-form-item label="តារាង"><el-input v-model="q.table" placeholder="soldiers, decisions..." clearable /></el-form-item>
+        <el-form-item label="ID"><el-input v-model="q.record_id" clearable style="width: 100px" /></el-form-item>
         <el-form-item label="សកម្មភាព">
           <el-select v-model="q.action" clearable style="width: 150px">
-            <el-option v-for="a in ['create', 'update', 'delete', 'approve', 'cancel', 'login']" :key="a" :value="a" />
+            <el-option v-for="a in ACTIONS" :key="a" :value="a" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="អ្នកប្រើ">
+          <el-select v-model="q.user_id" clearable filterable style="width: 180px">
+            <el-option v-for="u in users" :key="u.id" :value="u.id" :label="`${u.full_name} (${u.username})`" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="ថ្ងៃ">
+          <el-date-picker v-model="dates" type="daterange" value-format="YYYY-MM-DD" format="DD/MM/YYYY"
+                          start-placeholder="ពីថ្ងៃ" end-placeholder="ដល់ថ្ងៃ" style="width: 260px" />
         </el-form-item>
         <el-form-item><el-button type="primary" native-type="submit" icon="Search">ស្វែងរក</el-button></el-form-item>
       </el-form>

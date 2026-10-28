@@ -76,6 +76,10 @@ frontend/src/
 
 ## Important notes
 
+- After pulling an update, run `alembic upgrade head` and then `python -m scripts.seed` again: the seed only adds what is
+  missing, and gives permissions of new modules (e.g. ការងារអត្តសញ្ញាណប័ណ្ណយោធិន) to the roles that should have them.
+- Every list can save its filter (Filter ដែលបានរក្សាទុក, own or shared) and export exactly what is filtered to Excel or
+  print it / save it as PDF. Filtered lists keep their filter in the URL, so a link opens the same list.
 - Soldier Excel import / comparison: download the template from **ការងារបញ្ចូលក្របខ័ណ្ឌយោធិនអាជីព**. The list export uses the same columns, so an exported file can be compared or imported again.
 - `member_db.sql` contains real citizen personal data. Only its `countries` and `jobs` lists are imported. Keep it out of git (it is already in `.gitignore`).
 - The **rank list is a draft**. Check names, order and "minimum years to next rank" under រចនាសម្ព័ន្ធក្របខណ្ឌ → ឋានន្តរស័ក្តិ.

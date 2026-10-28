@@ -7,7 +7,7 @@ const year = (key, label, extra = {}) => ({ key, label, type: 'number', min: 199
 // meta: { statuses, reasons, results } from GET /meta/conscription; provinces / districts: [{ value, label }]
 export function conscriptConfig(meta, provinces) {
   return {
-    title: 'យុវជនបំពេញកាតព្វកិច្ចយោធា', endpoint: '/conscripts', module: 'conscripts', formWidth: '980px',
+    title: 'យុវជនបំពេញកាតព្វកិច្ចយោធា', endpoint: '/conscripts', auditFilters: true, module: 'conscripts', formWidth: '980px',
     attachments: 'conscript', attachmentTitle: 'conscript_no', actionWidth: 190,
     columns: [
       { key: 'conscript_no', label: 'លេខសម្គាល់', width: 130 },
@@ -21,6 +21,10 @@ export function conscriptConfig(meta, provinces) {
       { key: 'role', label: 'មុខតំណែង/តួនាទី', width: 130 },
       { key: 'unit_name', label: 'អង្គភាព', minWidth: 150 },
       { key: 'service_start', label: 'ថ្ងៃចូលបំពេញកាតព្វកិច្ច', type: 'date', width: 150 },
+      { key: 'service_end', label: 'ថ្ងៃបញ្ចប់កាតព្វកិច្ច', type: 'date', width: 140 },
+      { key: 'service_type_name', label: 'ប្រភេទ', width: 100 },
+      { key: 'service_status_name', label: 'ស្ថានភាពបម្រើ', width: 120, tag: (r) => SERVICE_TAG[r.service_status] || 'info' },
+      { key: 'reserve_unit_name', label: 'អង្គភាពបម្រុង', minWidth: 140 },
       { key: 'registration_year', label: 'ឆ្នាំចុះឈ្មោះ', width: 110 },
       { key: 'province_name', label: 'ខេត្តចុះឈ្មោះ', width: 130 },
       { key: 'status_name', label: 'ស្ថានភាព', width: 140, tag: (r) => STATUS_TAG[r.status] || 'info' },
@@ -30,7 +34,15 @@ export function conscriptConfig(meta, provinces) {
       year('registration_year', 'ឆ្នាំ', { width: '130px' }),
       { key: 'province_id', label: 'ខេត្ត', type: 'select', width: '170px', options: provinces },
       { key: 'gender', label: 'ភេទ', type: 'select', width: '100px', options: GENDER },
-      { key: 'unit_id', label: 'អង្គភាព', type: 'unit', width: '220px' },
+      { key: 'service_type', label: 'ប្រភេទ', type: 'select', width: '130px', options: meta.service_types },
+      { key: 'service_status', label: 'ស្ថានភាពបម្រើ', type: 'select', width: '140px', options: meta.service_statuses },
+      { key: 'unit_id', label: 'អង្គភាពដើម', type: 'unit', width: '220px' },
+      { key: 'reserve_unit_id', label: 'អង្គភាពបម្រុង', type: 'unit', width: '220px' },
+      { key: 'service_from', label: 'ចូលបម្រើពី', type: 'date', width: '150px' },
+      { key: 'service_to', label: 'ដល់', type: 'date', width: '150px' },
+      { key: 'service_end_from', label: 'បញ្ចប់កាតព្វកិច្ចពី', type: 'date', width: '150px' },
+      { key: 'service_end_to', label: 'ដល់', type: 'date', width: '150px' },
+      { key: 'phone', label: 'ទូរស័ព្ទ', width: '140px' },
       { key: 'rank_id', label: 'ឋានន្តរស័ក្តិ', type: 'select', width: '160px', options: (row, lk) => lk.list('ranks').map((r) => ({ value: r.id, label: r.name_kh })) },
       { key: 'education_level_id', label: 'កម្រិតវប្បធម៌', type: 'select', width: '150px', options: 'lookup:education_level' },
       { key: 'section_id', label: 'ផ្នែក', type: 'select', width: '170px', options: 'lookup:specialty_section' },
@@ -70,11 +82,12 @@ export function conscriptConfig(meta, provinces) {
   }
 }
 
+export const SERVICE_TAG = { serving: 'success', finished: 'info', deferred: 'warning' }
 export const STATUS_TAG = { registered: 'info', called: 'warning', served: 'success', exempted: 'danger', deferred: '' }
 
 export function registrationConfig(meta, provinces, districts, conscriptId) {
   return {
-    title: 'ការចុះឈ្មោះកាតព្វកិច្ច', endpoint: '/conscript-registrations', module: 'conscripts', formWidth: '760px',
+    title: 'ការចុះឈ្មោះកាតព្វកិច្ច', endpoint: '/conscript-registrations', auditFilters: true, module: 'conscripts', formWidth: '760px',
     fixedParams: { conscript_id: conscriptId },
     columns: [
       { key: 'registration_year', label: 'ឆ្នាំចុះឈ្មោះ', width: 110 },
@@ -100,7 +113,7 @@ export function registrationConfig(meta, provinces, districts, conscriptId) {
 
 export function medicalConfig(meta, conscriptId) {
   return {
-    title: 'ការពិនិត្យសុខភាព និងសមត្ថភាព', endpoint: '/conscript-medicals', module: 'conscript_medical', formWidth: '640px',
+    title: 'ការពិនិត្យសុខភាព និងសមត្ថភាព', endpoint: '/conscript-medicals', auditFilters: true, module: 'conscript_medical', formWidth: '640px',
     fixedParams: { conscript_id: conscriptId },
     columns: [
       { key: 'exam_date', label: 'ថ្ងៃពិនិត្យ', type: 'date', width: 120 },
@@ -121,28 +134,37 @@ export function medicalConfig(meta, conscriptId) {
   }
 }
 
-export function serviceConfig(conscriptId) {
+export function serviceConfig(conscriptId, meta = {}) {
   const ranks = (row, lk) => lk.list('ranks').map((r) => ({ value: r.id, label: r.name_kh }))
   return {
-    title: 'ការបម្រើកាតព្វកិច្ច', endpoint: '/conscript-services', module: 'conscripts', formWidth: '820px',
+    title: 'ការបម្រើកាតព្វកិច្ច', endpoint: '/conscript-services', auditFilters: true, module: 'conscripts', formWidth: '820px',
     fixedParams: { conscript_id: conscriptId },
     columns: [
       { key: 'period', label: 'រយៈពេល', width: 210, value: (r) => `${fmtDate(r.start_date)} – ${fmtDate(r.end_date) || '...'}` },
-      { key: 'unit_name', label: 'អង្គភាព/កងពល/កងវរសេនាធំ', minWidth: 180 },
+      { key: 'service_type_name', label: 'ប្រភេទ', width: 100 },
+      { key: 'status_name', label: 'ស្ថានភាព', width: 110, tag: (r) => SERVICE_TAG[r.status] || 'info' },
+      { key: 'unit_name', label: 'អង្គភាពដើម', minWidth: 160 },
+      { key: 'reserve_unit_name', label: 'អង្គភាពបម្រុង', minWidth: 150 },
       { key: 'rank_name', label: 'ឋានន្តរស័ក្តិ', width: 130 },
       { key: 'role', label: 'តួនាទី', width: 130 },
       { key: 'order_no', label: 'លេខបញ្ជា/សេចក្ដីសម្រេច', width: 160 },
+      { key: 'post_service_status', label: 'ឋានៈបន្ទាប់ពីបញ្ចប់', minWidth: 150 },
     ],
     fields: [
+      { key: 'service_type', label: 'ប្រភេទ', type: 'select', required: true, default: 'duty', options: meta.service_types || [], span: 8 },
+      { key: 'status', label: 'ស្ថានភាព', type: 'select', required: true, default: 'serving', options: meta.service_statuses || [], span: 8 },
       { key: 'start_date', label: 'ថ្ងៃចូលបម្រើ', type: 'date', span: 8 },
-      { key: 'end_date', label: 'ថ្ងៃចេញ', type: 'date', span: 8 },
+      { key: 'end_date', label: 'ថ្ងៃបញ្ចប់កាតព្វកិច្ច', type: 'date', span: 8 },
       { key: 'order_no', label: 'លេខបញ្ជា/សេចក្ដីសម្រេច', span: 8 },
-      { key: 'unit_id', label: 'អង្គភាព', type: 'unit', span: 12 },
-      { key: 'unit_text', label: 'ឬ អង្គភាព/កងពល/កងវរសេនាធំ (ជាអក្សរ)', span: 12 },
+      { key: 'unit_id', label: 'អង្គភាពដើម', type: 'unit', span: 12 },
+      { key: 'unit_text', label: 'ឬ អង្គភាពដើម (ជាអក្សរ)', span: 12 },
+      { key: 'reserve_unit_id', label: 'អង្គភាពបម្រុង', type: 'unit', span: 12 },
+      { key: 'reserve_unit_text', label: 'ឬ អង្គភាពបម្រុង (ជាអក្សរ)', span: 12 },
       { key: 'rank_id', label: 'ឋានន្តរស័ក្តិ', type: 'select', options: ranks, span: 12 },
       { key: 'role', label: 'តួនាទី', span: 12 },
       { key: 'trainings', label: 'វគ្គបណ្ដុះបណ្ដាលដែលបានចូលរួម', type: 'textarea', rows: 2 },
       { key: 'awards_discipline', label: 'ការលើកសរសើរ / វិន័យ', type: 'textarea', rows: 2 },
+      { key: 'post_service_status', label: 'ឋានៈបន្ទាប់ពីបញ្ចប់ (ប្រសិនបើមាន)' },
     ],
   }
 }

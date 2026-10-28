@@ -51,6 +51,7 @@ export const menu = [
   },
   { key: 'awards', icon: 'Trophy', to: '/awards', perm: 'awards.view' },
   { key: 'discipline', icon: 'Warning', to: '/discipline', perm: 'discipline.view' },
+  { key: 'idCards', icon: 'Postcard', to: '/id-cards', perm: 'id_cards.view' },
   { key: 'retirement', icon: 'Calendar', to: '/retirement', perm: 'retirement.view' },
   { key: 'separation', icon: 'Remove', to: '/separation', perm: 'separation.view' },
   { key: 'reports', icon: 'DataAnalysis', to: '/reports', perm: 'reports.view' },

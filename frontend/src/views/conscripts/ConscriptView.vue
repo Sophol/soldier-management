@@ -108,7 +108,7 @@ const canMedical = computed(() => auth.can('conscript_medical.view'))
           <CrudPage :config="medicalConfig(meta, id)" />
         </el-tab-pane>
         <el-tab-pane label="ការបម្រើកាតព្វកិច្ច" name="service" lazy>
-          <CrudPage :config="serviceConfig(id)" />
+          <CrudPage :config="serviceConfig(id, meta)" @saved="loadPerson" />
         </el-tab-pane>
         <el-tab-pane label="ឯកសារភ្ជាប់ (ស្កេនប្រវត្តិរូប)" name="files" lazy>
           <FileAttachments owner-type="conscript" :owner-id="id" :editable="auth.can('conscripts.update')" />

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
@@ -9,7 +9,9 @@ import SoldierSelect from '@/components/SoldierSelect.vue'
 import UnitTreeSelect from '@/components/UnitTreeSelect.vue'
 import FileAttachments from '@/components/FileAttachments.vue'
 import DocumentSelect from '@/components/DocumentSelect.vue'
+import SavedFilters from '@/components/SavedFilters.vue'
 import { STATUS_TAG, STATUS_TEXT, WORKFLOW, fmtDate, fmtDateTime, num, todayISO } from '@/utils/format'
+import { exportExcel, fetchAll, filterSummary, printList } from '@/utils/listExport'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,7 +24,45 @@ const TITLES = { appoint: 'តែងតាំងមុខតំណែង', trans
 const rows = ref([])
 const total = ref(0)
 const loading = ref(false)
-const q = reactive({ page: 1, size: 20, q: '', status: null, date_from: null, date_to: null, waiting: false })
+const blank = {
+  q: '', status: null, date_from: null, date_to: null, effective_from: null, effective_to: null, waiting: false, overdue: false,
+  old_rank_id: null, new_rank_id: null, old_position_id: null, new_position_id: null, old_unit_id: null, new_unit_id: null,
+  created_by: null, created_from: null, created_to: null,
+}
+const q = reactive({ page: 1, size: 20, ...blank })
+// filters can come from the URL (dashboard links, bookmarks)
+for (const [k, v] of Object.entries(route.query)) {
+  if (!(k in blank) || v === '') continue
+  q[k] = typeof blank[k] === 'boolean' ? v === 'true' : /^\d+$/.test(v) && k.endsWith('_id') || k === 'created_by' ? Number(v) : v
+}
+const showMore = ref(Object.keys(route.query).some((k) => !['q', 'status', 'waiting'].includes(k) && k in blank))
+const users = ref([])
+const exporting = ref(false)
+const range = (from, to) => computed({
+  get: () => (q[from] || q[to] ? [q[from], q[to]] : null),
+  set: (v) => { q[from] = v?.[0] || null; q[to] = v?.[1] || null },
+})
+const decisionDates = range('date_from', 'date_to')
+const effectiveDates = range('effective_from', 'effective_to')
+const createdDates = range('created_from', 'created_to')
+watch(showMore, async (v) => { if (v && !users.value.length) users.value = await lookups.loadUsers() }, { immediate: true })
+
+function filterValues() {
+  const out = {}
+  for (const k of Object.keys(blank)) if (q[k] !== null && q[k] !== '' && q[k] !== false) out[k] = q[k]
+  return out
+}
+function search() {
+  q.page = 1
+  router.replace({ query: filterValues() })
+  load()
+}
+function resetFilters() { Object.assign(q, blank); search() }
+function applySaved(values) {
+  Object.assign(q, blank, values)
+  showMore.value = true
+  search()
+}
 
 const dialog = ref(false)
 const saving = ref(false)
@@ -40,8 +80,7 @@ const rules = {
 async function load() {
   loading.value = true
   try {
-    const params = { kind: kind.value }
-    for (const [k, v] of Object.entries(q)) if (v !== null && v !== '') params[k] = v
+    const params = { kind: kind.value, page: q.page, size: q.size, ...filterValues() }
     const { data } = await http.get('/decisions', { params })
     rows.value = data.items
     total.value = data.total
@@ -125,6 +164,40 @@ const ACTIONS = {
 }
 const workflowActions = (d) => (d.actions || []).filter((a) => ACTIONS[a])
 
+// Export Excel / PDF of every decision matching the filter
+const EXPORT_COLUMNS = [
+  { label: 'លេខសេចក្ដីសម្រេច', text: (r) => r.decision_no },
+  { label: 'ថ្ងៃខែឆ្នាំ', text: (r) => fmtDate(r.decision_date) },
+  { label: 'ចូលជាធរមាន', text: (r) => fmtDate(r.effective_date) },
+  { label: 'ចំនួនយោធិន', text: (r) => r.item_count },
+  { label: 'ចេញដោយ', text: (r) => r.issued_by },
+  { label: 'អ្នកដាក់សំណើ', text: (r) => r.created_by_name },
+  { label: 'ស្ថានភាព', text: (r) => STATUS_TEXT[r.status] + (r.overdue ? ' (យឺតយ៉ាវ)' : '') },
+  { label: 'កំណត់សម្គាល់', text: (r) => r.notes },
+]
+function filterText() {
+  const name = (key, id) => lookups.name(key, id)
+  return filterSummary([
+    ['ពាក្យគន្លឹះ', q.q], ['ស្ថានភាព', STATUS_TEXT[q.status]], ['រង់ចាំខ្ញុំ', q.waiting ? 'បាទ' : ''], ['យឺតយ៉ាវ', q.overdue ? 'បាទ' : ''],
+    ['ថ្ងៃសម្រេច', q.date_from || q.date_to ? `${fmtDate(q.date_from)} → ${fmtDate(q.date_to)}` : ''],
+    ['ចូលជាធរមាន', q.effective_from || q.effective_to ? `${fmtDate(q.effective_from)} → ${fmtDate(q.effective_to)}` : ''],
+    ['ស័ក្តិចាស់', name('ranks', q.old_rank_id)], ['ស័ក្តិថ្មី', name('ranks', q.new_rank_id)],
+    ['តំណែងចាស់', name('positions', q.old_position_id)], ['តំណែងថ្មី', name('positions', q.new_position_id)],
+    ['អង្គភាពចាស់', lookups.unitMap[q.old_unit_id]?.name_kh], ['អង្គភាពថ្មី', lookups.unitMap[q.new_unit_id]?.name_kh],
+    ['អ្នកដាក់សំណើ', users.value.find((u) => u.id === q.created_by)?.full_name],
+  ])
+}
+async function exportAs(kindOfFile) {
+  exporting.value = true
+  try {
+    const all = await fetchAll('/decisions', { kind: kind.value, ...filterValues() })
+    if (kindOfFile === 'xlsx') await exportExcel(module.value, TITLES[kind.value], EXPORT_COLUMNS, all)
+    else printList(router, `សេចក្ដីសម្រេច${TITLES[kind.value]}`, filterText(), EXPORT_COLUMNS, all)
+  } finally {
+    exporting.value = false
+  }
+}
+
 async function act(row, action) {
   const m = ACTIONS[action]
   // the director's approval is final: it registers the letter and updates the records
@@ -194,21 +267,70 @@ onMounted(load)
   <div class="page">
     <div class="page-head">
       <h2>{{ TITLES[kind] }}</h2>
-      <el-button v-if="auth.can(`${module}.create`)" type="primary" icon="Plus" @click="openCreate">បង្កើតសេចក្ដីសម្រេចថ្មី</el-button>
+      <div class="head-actions">
+        <SavedFilters :module="`decisions/${kind}`" :current="filterValues" @apply="applySaved" />
+        <el-button v-if="auth.can(`${module}.export`)" icon="Download" :loading="exporting" @click="exportAs('xlsx')">នាំចេញ Excel</el-button>
+        <el-button v-if="auth.can(`${module}.print`)" icon="Printer" :loading="exporting" @click="exportAs('pdf')">បោះពុម្ព / PDF</el-button>
+        <el-button v-if="auth.can(`${module}.create`)" type="primary" icon="Plus" @click="openCreate">បង្កើតសេចក្ដីសម្រេចថ្មី</el-button>
+      </div>
     </div>
 
     <el-card shadow="never" class="filter-card">
-      <el-form inline @submit.prevent="q.page = 1; load()">
+      <el-form inline @submit.prevent="search">
         <el-form-item><el-input v-model="q.q" placeholder="លេខ / ឈ្មោះ / អត្តលេខ" clearable prefix-icon="Search" /></el-form-item>
-        <el-form-item label="ស្ថានភាព">
-          <el-select v-model="q.status" clearable style="width: 200px">
+        <el-form-item label="ស្ថានភាព / ជំហានអនុម័ត">
+          <el-select v-model="q.status" clearable style="width: 240px">
             <el-option v-for="(t, k) in STATUS_TEXT" :key="k" :value="k" :label="t" />
           </el-select>
         </el-form-item>
-        <el-form-item><el-checkbox v-model="q.waiting" @change="q.page = 1; load()">រង់ចាំខ្ញុំអនុម័ត</el-checkbox></el-form-item>
-        <el-form-item label="ចាប់ពី"><el-date-picker v-model="q.date_from" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 150px" /></el-form-item>
-        <el-form-item label="ដល់"><el-date-picker v-model="q.date_to" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 150px" /></el-form-item>
-        <el-form-item><el-button type="primary" native-type="submit" icon="Search">ស្វែងរក</el-button></el-form-item>
+        <el-form-item><el-checkbox v-model="q.waiting" @change="search">រង់ចាំខ្ញុំអនុម័ត</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="q.overdue" @change="search">យឺតយ៉ាវ</el-checkbox></el-form-item>
+        <el-form-item label="ថ្ងៃសម្រេច">
+          <el-date-picker v-model="decisionDates" type="daterange" value-format="YYYY-MM-DD" format="DD/MM/YYYY" start-placeholder="ពីថ្ងៃ" end-placeholder="ដល់ថ្ងៃ" style="width: 260px" />
+        </el-form-item>
+        <template v-if="showMore">
+          <el-form-item label="ថ្ងៃមានប្រសិទ្ធភាព">
+            <el-date-picker v-model="effectiveDates" type="daterange" value-format="YYYY-MM-DD" format="DD/MM/YYYY" start-placeholder="ពីថ្ងៃ" end-placeholder="ដល់ថ្ងៃ" style="width: 260px" />
+          </el-form-item>
+          <el-form-item v-if="showRank" label="ស័ក្តិចាស់ → ថ្មី">
+            <el-select v-model="q.old_rank_id" clearable filterable placeholder="ចាស់" style="width: 150px">
+              <el-option v-for="r in lookups.list('ranks')" :key="r.id" :value="r.id" :label="r.name_kh" />
+            </el-select>
+            <span class="arrow">→</span>
+            <el-select v-model="q.new_rank_id" clearable filterable placeholder="ថ្មី" style="width: 150px">
+              <el-option v-for="r in lookups.list('ranks')" :key="r.id" :value="r.id" :label="r.name_kh" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="showPosition" label="តំណែងចាស់ → ថ្មី">
+            <el-select v-model="q.old_position_id" clearable filterable placeholder="ចាស់" style="width: 170px">
+              <el-option v-for="p in lookups.list('positions')" :key="p.id" :value="p.id" :label="p.name_kh" />
+            </el-select>
+            <span class="arrow">→</span>
+            <el-select v-model="q.new_position_id" clearable filterable placeholder="ថ្មី" style="width: 170px">
+              <el-option v-for="p in lookups.list('positions')" :key="p.id" :value="p.id" :label="p.name_kh" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="showUnit" label="អង្គភាពចាស់ → ថ្មី">
+            <div class="unit-pair">
+              <UnitTreeSelect v-model="q.old_unit_id" placeholder="ចាស់" />
+              <span class="arrow">→</span>
+              <UnitTreeSelect v-model="q.new_unit_id" placeholder="ថ្មី" />
+            </div>
+          </el-form-item>
+          <el-form-item label="អ្នកដាក់សំណើ">
+            <el-select v-model="q.created_by" clearable filterable style="width: 180px">
+              <el-option v-for="u in users" :key="u.id" :value="u.id" :label="u.full_name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="ថ្ងៃបញ្ចូល">
+            <el-date-picker v-model="createdDates" type="daterange" value-format="YYYY-MM-DD" format="DD/MM/YYYY" start-placeholder="ពីថ្ងៃ" end-placeholder="ដល់ថ្ងៃ" style="width: 260px" />
+          </el-form-item>
+        </template>
+        <el-form-item>
+          <el-button type="primary" native-type="submit" icon="Search">ស្វែងរក</el-button>
+          <el-button icon="RefreshLeft" @click="resetFilters">សម្អាត</el-button>
+          <el-button link type="primary" @click="showMore = !showMore">{{ showMore ? 'លាក់ការស្វែងរកលម្អិត' : 'ស្វែងរកលម្អិត' }}</el-button>
+        </el-form-item>
       </el-form>
     </el-card>
 
@@ -220,6 +342,7 @@ onMounted(load)
         <el-table-column label="ចូលជាធរមាន" width="120"><template #default="{ row }">{{ fmtDate(row.effective_date) }}</template></el-table-column>
         <el-table-column label="ចំនួនយោធិន" width="110" align="center"><template #default="{ row }">{{ num(row.item_count) }}</template></el-table-column>
         <el-table-column prop="issued_by" label="ចេញដោយ" min-width="140" />
+        <el-table-column prop="created_by_name" label="អ្នកដាក់សំណើ" min-width="130" />
         <el-table-column prop="notes" label="កំណត់សម្គាល់" min-width="160" show-overflow-tooltip />
         <el-table-column label="ស្ថានភាព" width="210">
           <template #default="{ row }">
@@ -366,6 +489,9 @@ onMounted(load)
 .small { font-size: 12px; line-height: 1.6; }
 .drawer-actions { margin-top: 18px; display: flex; gap: 8px; flex-wrap: wrap; }
 .overdue { margin-left: 4px; }
+.arrow { margin: 0 6px; color: var(--el-text-color-secondary); }
+.unit-pair { display: flex; align-items: center; width: 460px; max-width: 100%; }
+.unit-pair > :not(.arrow) { flex: 1; min-width: 0; }
 .wf-steps { margin-top: 16px; }
 .comment { margin-top: 4px; padding: 6px 10px; background: var(--el-fill-color-light); border-radius: 4px; white-space: pre-line; }
 </style>

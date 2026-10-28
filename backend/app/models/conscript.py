@@ -14,6 +14,8 @@ REGISTRATION_STATUSES = {
 }
 EXEMPTION_REASONS = {"study": "សិក្សា", "health": "សុខភាព", "family": "គ្រួសារ", "other": "ផ្សេងៗ"}
 MEDICAL_RESULTS = {"pass": "ជាប់", "fail": "ធ្លាក់", "deferred": "ពន្យារ"}
+SERVICE_TYPES = {"duty": "កាតព្វកិច្ច", "reserve": "បម្រុង"}
+SERVICE_STATUSES = {"serving": "កំពុងបម្រើ", "finished": "បញ្ចប់", "deferred": "ពន្យារ"}
 
 
 class Conscript(AuditMixin, SoftDeleteMixin, Base):
@@ -90,7 +92,14 @@ class ConscriptService(AuditMixin, SoftDeleteMixin, Base):
     trainings: Mapped[str | None] = mapped_column(Text)
     awards_discipline: Mapped[str | None] = mapped_column(Text)
     order_no: Mapped[str | None] = mapped_column(String(100))  # លេខបញ្ជា/សេចក្ដីសម្រេច
+    service_type: Mapped[str] = mapped_column(String(10), default="duty", index=True)  # duty / reserve
+    status: Mapped[str] = mapped_column(String(10), default="serving", index=True)  # serving / finished / deferred
+    # unit_id is the original unit (អង្គភាពដើម); a reservist is also attached to a reserve unit (អង្គភាពបម្រុង)
+    reserve_unit_id: Mapped[int | None] = mapped_column(ForeignKey("units.id"))
+    reserve_unit_text: Mapped[str | None] = mapped_column(String(255))
+    post_service_status: Mapped[str | None] = mapped_column(String(255))  # ឋានៈបន្ទាប់ពីបញ្ចប់
 
     conscript = relationship("Conscript", lazy="joined")
-    unit = relationship("Unit", lazy="joined")
+    unit = relationship("Unit", lazy="joined", foreign_keys=[unit_id])
+    reserve_unit = relationship("Unit", lazy="joined", foreign_keys=[reserve_unit_id])
     rank = relationship("Rank", lazy="joined")

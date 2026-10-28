@@ -22,6 +22,8 @@ const hasPhoto = ref(false)
 
 const empty = () => ({
   military_id: '', name_kh: '', name_latin: '', gender: 'M', date_of_birth: null, national_id: '', phone: '',
+  national_id_expiry: null, nationality: 'ខ្មែរ', ethnicity: '',
+  base_village_id: null, voting_village_id: null, voting_place: '', housing_status: null, dependents_count: 0,
   blood_type_id: null, birth_village_id: null, birth_place_text: '', current_village_id: null, current_address_text: '',
   current_rank_id: null, rank_date: null, current_position_id: null, position_date: null, current_unit_id: null,
   unit_transfer_date: null, from_unit_text: '', enlistment_date: null, service_track: 'admin', establishment_no: '',
@@ -31,6 +33,7 @@ const empty = () => ({
   notes: '', educations: [], languages: [], children: [],
 })
 const form = ref(empty())
+const HOUSING = [{ value: 'own', label: 'ផ្ទះផ្ទាល់' }, { value: 'rent', label: 'ជួល' }, { value: 'stay', label: 'ស្នាក់' }]
 
 const rules = {
   military_id: [{ required: true, message: 'សូមបញ្ចូលអត្តលេខ' }],
@@ -141,7 +144,10 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
                 </el-form-item></el-col>
                 <el-col :md="5"><el-form-item label="ថ្ងៃខែឆ្នាំកំណើត"><el-date-picker v-model="form.date_of_birth" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
                 <el-col :md="5"><el-form-item label="លេខអត្តសញ្ញាណប័ណ្ណសញ្ជាតិខ្មែរ"><el-input v-model="form.national_id" /></el-form-item></el-col>
+                <el-col :md="5"><el-form-item label="ថ្ងៃផុតកំណត់អត្តសញ្ញាណប័ណ្ណ"><el-date-picker v-model="form.national_id_expiry" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
                 <el-col :md="5"><el-form-item label="លេខទូរសព្ទ"><el-input v-model="form.phone" /></el-form-item></el-col>
+                <el-col :md="4"><el-form-item label="សញ្ជាតិ"><el-input v-model="form.nationality" /></el-form-item></el-col>
+                <el-col :md="4"><el-form-item label="ជនជាតិ"><el-input v-model="form.ethnicity" /></el-form-item></el-col>
                 <el-col :md="5"><el-form-item label="ប្រភេទឈាម">
                   <el-select v-model="form.blood_type_id" clearable><el-option v-for="o in lookups.list('blood_type')" :key="o.id" :value="o.id" :label="o.name_kh" /></el-select>
                 </el-form-item></el-col>
@@ -231,6 +237,21 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
               <el-button link type="danger" icon="Delete" @click="form.languages.splice(i, 1)" />
             </div>
             <el-button class="add-row" icon="Plus" size="small" @click="addLang">បន្ថែមភាសា</el-button>
+          </el-tab-pane>
+
+          <!-- គោលនយោបាយ -->
+          <el-tab-pane label="គោលនយោបាយ" name="policy">
+            <el-row :gutter="14">
+              <el-col :md="6"><el-form-item label="ស្ថានភាពលំនៅ">
+                <el-select v-model="form.housing_status" clearable><el-option v-for="o in HOUSING" :key="o.value" :value="o.value" :label="o.label" /></el-select>
+              </el-form-item></el-col>
+              <el-col :md="6"><el-form-item label="ចំនួនអ្នកក្នុងបន្ទុក"><el-input-number v-model="form.dependents_count" :min="0" style="width: 100%" /></el-form-item></el-col>
+            </el-row>
+            <div class="section-title">ជួលមូលដ្ឋាន (ខេត្ត → ភូមិ)</div>
+            <VillageSelect v-model="form.base_village_id" />
+            <div class="section-title">ទីបោះឆ្នោត</div>
+            <VillageSelect v-model="form.voting_village_id" />
+            <el-form-item label="ការិយាល័យបោះឆ្នោត" style="margin-top: 8px"><el-input v-model="form.voting_place" /></el-form-item>
           </el-tab-pane>
 
           <!-- គ្រួសារ -->

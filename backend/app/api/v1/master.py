@@ -42,7 +42,7 @@ from app.schemas import (
     VillageIn,
 )
 from app.services.common import to_dict
-from app.services.staffing import filled_by_rank, filled_by_unit_position
+from app.services.staffing import filled_by_rank, filled_by_unit_position, filled_column
 
 router = APIRouter()
 extra = APIRouter()  # custom routes that must be registered before the generic /{id} routes
@@ -294,6 +294,11 @@ router.include_router(crud_router(
 router.include_router(crud_router(
     prefix="/unit-positions", model=UnitPosition, module="positions", schema=UnitPositionIn,
     filter_fields={"unit_id": UnitPosition.unit_id, "position_id": UnitPosition.position_id},
+    # ក្របខណ្ឌទំនេរ / គ្រប់ / លើស (vacant / full / over the staffing table)
+    custom_filters={"fill": lambda stmt, v: stmt.where({"vacant": filled_column() < UnitPosition.quota,
+                                                        "full": filled_column() == UnitPosition.quota,
+                                                        "over": filled_column() > UnitPosition.quota}
+                                                       .get(v, UnitPosition.id.is_not(None)))},
     order_by=(UnitPosition.unit_id, UnitPosition.id), serialize=_unit_position_out,
     before_save=_unit_position_check, tags=["positions"],
 ))

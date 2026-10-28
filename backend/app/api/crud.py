@@ -1,7 +1,7 @@
 """Generic list/get/create/update/delete router for simple tables."""
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -15,6 +15,31 @@ from app.models import User
 from app.services.common import audit, paginate, to_dict
 
 
+def _day(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def audit_filters(stmt, model, params):
+    """Filters every list shares: entered by (created_by / updated_by) and created / last-updated date range.
+    The "to" dates include the whole day."""
+    if hasattr(model, "created_by") and (uid := params.get("created_by")):
+        stmt = stmt.where(model.created_by == uid)
+    if hasattr(model, "updated_by") and (uid := params.get("updated_by")):
+        stmt = stmt.where(model.updated_by == uid)
+    for col_name in ("created", "updated"):
+        col = getattr(model, f"{col_name}_at", None)
+        if col is None:
+            continue
+        if d := _day(params.get(f"{col_name}_from") or ""):
+            stmt = stmt.where(col >= d)
+        if d := _day(params.get(f"{col_name}_to") or ""):
+            stmt = stmt.where(col < d + timedelta(days=1))
+    return stmt
+
+
 def crud_router(
     *,
     prefix: str,
@@ -23,6 +48,7 @@ def crud_router(
     schema: type[BaseModel],
     search_fields: tuple = (),
     filter_fields: dict | None = None,
+    custom_filters: dict[str, Callable] | None = None,
     order_by: tuple = (),
     serialize: Callable | None = None,
     public_read: bool = False,
@@ -35,6 +61,7 @@ def crud_router(
 ) -> APIRouter:
     """
     filter_fields: {"query_param": column}
+    custom_filters: {"query_param": fn(stmt, value) -> stmt}  computed filters (year, status, expiring within...)
     base_query(stmt, db, user) -> stmt   : extra filtering (e.g. unit scope)
     before_save(db, user, obj, data, is_new): validation / derived fields
     after_save(db, user, obj, is_new): side effects (e.g. strength movements)
@@ -82,6 +109,11 @@ def crud_router(
                     stmt = stmt.where(col <= val)
                 else:
                     stmt = stmt.where(col == val)
+        for param, fn in (custom_filters or {}).items():
+            val = request.query_params.get(param)
+            if val not in (None, ""):
+                stmt = fn(stmt, val)
+        stmt = audit_filters(stmt, model, request.query_params)
         stmt = stmt.order_by(*(order_by or (model.id.desc(),)))
         items, total = paginate(db, stmt, page, size)
         return {"items": [ser(i) for i in items], "total": total, "page": page, "size": size}

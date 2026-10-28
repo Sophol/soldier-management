@@ -15,6 +15,9 @@ class Soldier(AuditMixin, SoftDeleteMixin, Base):
     gender: Mapped[str] = mapped_column(String(1))  # M / F
     date_of_birth: Mapped[date | None] = mapped_column(Date)
     national_id: Mapped[str | None] = mapped_column(String(50), unique=True)
+    national_id_expiry: Mapped[date | None] = mapped_column(Date, index=True)  # ថ្ងៃផុតកំណត់អត្តសញ្ញាណប័ណ្ណ
+    nationality: Mapped[str | None] = mapped_column(String(50), default="ខ្មែរ")  # សញ្ជាតិ
+    ethnicity: Mapped[str | None] = mapped_column(String(50))  # ជនជាតិ
     phone: Mapped[str | None] = mapped_column(String(50))
     photo_path: Mapped[str | None] = mapped_column(String(255))
     blood_type_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
@@ -23,6 +26,12 @@ class Soldier(AuditMixin, SoftDeleteMixin, Base):
     birth_place_text: Mapped[str | None] = mapped_column(String(500))
     current_village_id: Mapped[int | None] = mapped_column(ForeignKey("villages.id"))
     current_address_text: Mapped[str | None] = mapped_column(String(500))
+    # គោលនយោបាយ (New (2).txt §10): ជួលមូលដ្ឋាន, ទីបោះឆ្នោត, ស្ថានភាពលំនៅ, អ្នកក្នុងបន្ទុក
+    base_village_id: Mapped[int | None] = mapped_column(ForeignKey("villages.id"))
+    voting_village_id: Mapped[int | None] = mapped_column(ForeignKey("villages.id"))
+    voting_place: Mapped[str | None] = mapped_column(String(255))  # polling station
+    housing_status: Mapped[str | None] = mapped_column(String(10))  # own ផ្ទះផ្ទាល់ / rent ជួល / stay ស្នាក់
+    dependents_count: Mapped[int] = mapped_column(SmallInteger, default=0)  # ចំនួនអ្នកក្នុងបន្ទុក
 
     # current service state (cache of the latest history row)
     current_rank_id: Mapped[int | None] = mapped_column(ForeignKey("ranks.id"), index=True)

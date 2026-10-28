@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from sqlalchemy import BigInteger, Date, ForeignKey, Numeric, String, Text
+from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import AuditMixin, Base, SoftDeleteMixin, TimestampMixin
@@ -30,7 +30,8 @@ class TrainingParticipant(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     course_id: Mapped[int] = mapped_column(ForeignKey("training_courses.id", ondelete="CASCADE"), index=True)
     soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
-    result: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="studying")  # studying / completed / dropped
+    result: Mapped[str | None] = mapped_column(String(100))  # លទ្ធផល/ថ្នាក់
     certificate_no: Mapped[str | None] = mapped_column(String(100))
 
     soldier = relationship("Soldier", lazy="joined")
@@ -41,7 +42,11 @@ class DisciplineRecord(AuditMixin, SoftDeleteMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
     discipline_type_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
+    level: Mapped[str | None] = mapped_column(String(100))  # កម្រិតទោស
     reason: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[str | None] = mapped_column(String(255))  # អ្នកសម្រេច
+    # status: cancelled (លុបចោល) when set; otherwise in force until end_date, then expired (ផុតកំណត់)
+    cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
     decision_no: Mapped[str | None] = mapped_column(String(100))
     decision_date: Mapped[date | None] = mapped_column(Date)
     start_date: Mapped[date | None] = mapped_column(Date)
@@ -56,6 +61,8 @@ class AwardRecord(AuditMixin, SoftDeleteMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
     award_type_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
+    level: Mapped[str | None] = mapped_column(String(100))  # កម្រិត/ថ្នាក់
+    awarded_by: Mapped[str | None] = mapped_column(String(255))  # អ្នកផ្ដល់
     reason: Mapped[str | None] = mapped_column(Text)
     decision_no: Mapped[str | None] = mapped_column(String(100))
     decision_date: Mapped[date | None] = mapped_column(Date)
@@ -68,7 +75,9 @@ class RetirementRecord(AuditMixin, SoftDeleteMixin, Base):
     __tablename__ = "retirement_records"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
-    type: Mapped[str] = mapped_column(String(20))  # pension / voluntary (ស្ម័គ្រចិត្ត) / category2
+    # pension (គ្រប់អាយុ) / voluntary (ស្ម័គ្រចិត្ត) / disability (ពិការ) / death (ស្លាប់) / category2
+    type: Mapped[str] = mapped_column(String(20))
+    case_status: Mapped[str] = mapped_column(String(20), default="submitted")  # submitted / processing / done
     decision_no: Mapped[str | None] = mapped_column(String(100))
     decision_date: Mapped[date | None] = mapped_column(Date)
     effective_date: Mapped[date] = mapped_column(Date)
@@ -114,3 +123,18 @@ class StrengthMovement(TimestampMixin, Base):
 
     soldier = relationship("Soldier", lazy="joined")
     unit = relationship("Unit", lazy="joined")
+
+
+class MilitaryCard(AuditMixin, SoftDeleteMixin, Base):
+    """អត្តសញ្ញាណប័ណ្ណយោធិន: one row per card issued (a replacement is a new row; the old one becomes replaced)."""
+
+    __tablename__ = "military_cards"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
+    card_no: Mapped[str | None] = mapped_column(String(100), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # issued / pending / lost / replaced
+    issue_date: Mapped[date | None] = mapped_column(Date)
+    expiry_date: Mapped[date | None] = mapped_column(Date, index=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    soldier = relationship("Soldier", lazy="joined")

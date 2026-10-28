@@ -16,6 +16,7 @@ const routes = [
   { path: '/soldiers/:id/print', component: v('soldiers/SoldierPrint'), meta: { perm: 'soldiers.print' } },
   { path: '/decisions/:id/print', component: v('decisions/DecisionPrint') },
   { path: '/reports/print', component: v('reports/ReportPrint'), meta: { perm: 'reports.print' } },
+  { path: '/print/list', component: v('ListPrint') },
   {
     path: '/',
     component: MainLayout,
@@ -43,6 +44,7 @@ const routes = [
       { path: 'training/:type(long|short)', component: v('training/Courses'), meta: { perm: 'training.view' } },
       { path: 'discipline', component: v('CrudView'), props: { name: 'discipline' }, meta: { perm: 'discipline.view' } },
       { path: 'awards', component: v('CrudView'), props: { name: 'awards' }, meta: { perm: 'awards.view' } },
+      { path: 'id-cards', component: v('CrudView'), props: { name: 'idCards' }, meta: { perm: 'id_cards.view' } },
       { path: 'retirement', component: v('CrudView'), props: { name: 'retirement' }, meta: { perm: 'retirement.view' } },
       { path: 'separation', component: v('CrudView'), props: { name: 'separation' }, meta: { perm: 'separation.view' } },
       { path: 'conscripts', component: v('conscripts/ConscriptList'), meta: { perm: 'conscripts.view' } },

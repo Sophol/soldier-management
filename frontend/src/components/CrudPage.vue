@@ -2,16 +2,20 @@
 /**
  * Config-driven list + dialog form page.
  * config: { title, endpoint, module, columns, fields, filters, defaults, attachments, formWidth, fixedParams,
- *           afterSave, canEdit(row), canDelete(row) }
+ *           afterSave, canEdit(row), canDelete(row), auditFilters }
+ * auditFilters: the table records who entered it and when, so the list also filters by អ្នកបញ្ចូល and
+ * created / last-updated date (the API's shared filters). Every list can save its filter and export it (Excel / PDF).
  */
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
 import { useAuth } from '@/stores/auth'
 import { useLookups } from '@/stores/lookups'
 import { fmtDate, num } from '@/utils/format'
+import { exportExcel, fetchAll, filterSummary, printList } from '@/utils/listExport'
 import FormField from './FormField.vue'
+import SavedFilters from './SavedFilters.vue'
 import FileAttachments from './FileAttachments.vue'
 import PendingFiles from './PendingFiles.vue'
 
@@ -26,12 +30,26 @@ const total = ref(0)
 const loading = ref(false)
 const query = reactive({ page: 1, size: 20, q: '' })
 const filters = reactive({})
+const AUDIT_KEYS = ['created_by', 'created_from', 'created_to', 'updated_from', 'updated_to']
+const filterKeys = () => [...(cfg.value.filters || []).map((f) => f.key), ...(cfg.value.auditFilters ? AUDIT_KEYS : [])]
 // filters can come from the URL (e.g. /documents/incoming?document_type_id=3), so other pages can link here
 const route = useRoute()
-for (const f of props.config.filters || []) {
-  const v = route.query[f.key]
-  if (v != null && v !== '') filters[f.key] = /^\d+$/.test(v) ? Number(v) : v
+const router = useRouter()
+for (const key of filterKeys()) {
+  const v = route.query[key]
+  if (v != null && v !== '') filters[key] = /^\d+$/.test(v) ? Number(v) : v
 }
+if (route.query.q) query.q = route.query.q
+const showMore = ref(AUDIT_KEYS.some((k) => filters[k] != null))
+const users = ref([])
+// a date range picker bound to two filter keys (…_from / …_to)
+const range = (prefix) => computed({
+  get: () => (filters[`${prefix}_from`] || filters[`${prefix}_to`] ? [filters[`${prefix}_from`], filters[`${prefix}_to`]] : null),
+  set: (v) => { filters[`${prefix}_from`] = v?.[0] || null; filters[`${prefix}_to`] = v?.[1] || null },
+})
+const createdRange = range('created')
+const updatedRange = range('updated')
+const exporting = ref(false)
 
 const dialog = ref(false)
 const saving = ref(false)
@@ -44,6 +62,8 @@ const pendingFiles = ref([])
 const canCreate = computed(() => auth.can(`${cfg.value.module}.create`))
 const canUpdate = computed(() => auth.can(`${cfg.value.module}.update`))
 const canDelete = computed(() => auth.can(`${cfg.value.module}.delete`))
+const canExport = computed(() => auth.can(`${cfg.value.module}.export`))
+const canPrint = computed(() => auth.can(`${cfg.value.module}.print`))
 
 const rules = computed(() => {
   const r = {}
@@ -53,11 +73,17 @@ const rules = computed(() => {
   return r
 })
 
+function filterParams() {
+  const params = { ...(cfg.value.fixedParams || {}) }
+  if (query.q) params.q = query.q
+  for (const [k, v] of Object.entries(filters)) if (v !== null && v !== '' && v !== undefined) params[k] = v
+  return params
+}
+
 async function load() {
   loading.value = true
   try {
-    const params = { ...query, ...(cfg.value.fixedParams || {}) }
-    for (const [k, v] of Object.entries(filters)) if (v !== null && v !== '' && v !== undefined) params[k] = v
+    const params = { ...filterParams(), page: query.page, size: query.size }
     const { data } = await http.get(cfg.value.endpoint, { params })
     rows.value = data.items
     total.value = data.total
@@ -71,6 +97,54 @@ function resetFilters() {
   query.q = ''
   query.page = 1
   load()
+}
+
+// saved filters: the keyword and every filter value (not the fixed params, which belong to the page)
+const savedKey = computed(() => cfg.value.savedKey || cfg.value.endpoint + (cfg.value.fixedParams ? `?${new URLSearchParams(cfg.value.fixedParams)}` : ''))
+function currentFilter() {
+  const out = { q: query.q }
+  for (const k of filterKeys()) out[k] = filters[k]
+  return out
+}
+function applySaved(params) {
+  Object.keys(filters).forEach((k) => { filters[k] = null })
+  for (const k of filterKeys()) if (k in params) filters[k] = params[k]
+  query.q = params.q || ''
+  query.page = 1
+  if (AUDIT_KEYS.some((k) => params[k] != null)) showMore.value = true
+  load()
+}
+
+// export the whole filtered list (all pages) as shown in the table
+function filterValueText(f, v) {
+  if (f.type === 'unit') return lookups.unitMap[v]?.name_kh
+  if (f.type === 'date') return fmtDate(v)
+  if (f.type !== 'select') return v
+  if (Array.isArray(f.options)) return f.options.find((o) => o.value === v)?.label ?? v
+  if (typeof f.options === 'string') return lookups.name(f.options.replace(/^lookup:/, ''), v) || v
+  return v
+}
+function filterText() {
+  const parts = [['ពាក្យគន្លឹះ', query.q]]
+  for (const f of cfg.value.filters || []) {
+    const v = filters[f.key]
+    if (v != null && v !== '') parts.push([f.label, filterValueText(f, v)])
+  }
+  if (filters.created_by) parts.push(['អ្នកបញ្ចូល', users.value.find((u) => u.id === filters.created_by)?.full_name])
+  if (filters.created_from || filters.created_to) parts.push(['ថ្ងៃបញ្ចូល', `${fmtDate(filters.created_from)} → ${fmtDate(filters.created_to)}`])
+  if (filters.updated_from || filters.updated_to) parts.push(['ថ្ងៃកែចុងក្រោយ', `${fmtDate(filters.updated_from)} → ${fmtDate(filters.updated_to)}`])
+  return filterSummary(parts)
+}
+async function exportAs(kind) {
+  exporting.value = true
+  try {
+    const all = await fetchAll(cfg.value.endpoint, filterParams())
+    const columns = cfg.value.columns.map((col) => ({ label: col.label, text: (row) => cell(row, col) }))
+    if (kind === 'xlsx') await exportExcel(cfg.value.module, cfg.value.title, columns, all)
+    else printList(router, cfg.value.title, filterText(), columns, all)
+  } finally {
+    exporting.value = false
+  }
 }
 
 function openCreate() {
@@ -148,6 +222,7 @@ function cell(row, col) {
 }
 
 watch(() => JSON.stringify([cfg.value.endpoint, cfg.value.fixedParams]), () => { query.page = 1; resetFilters() })
+watch(showMore, async (v) => { if (v && !users.value.length) users.value = await lookups.loadUsers() }, { immediate: true })
 onMounted(load)
 defineExpose({ load, openCreate, openEdit })
 </script>
@@ -158,6 +233,9 @@ defineExpose({ load, openCreate, openEdit })
       <h2>{{ cfg.title }}</h2>
       <div class="head-actions">
         <slot name="head-actions" />
+        <SavedFilters :module="savedKey" :current="currentFilter" @apply="applySaved" />
+        <el-button v-if="canExport" icon="Download" :loading="exporting" @click="exportAs('xlsx')">នាំចេញ Excel</el-button>
+        <el-button v-if="canPrint" icon="Printer" :loading="exporting" @click="exportAs('pdf')">បោះពុម្ព / PDF</el-button>
         <el-button v-if="canCreate && !cfg.noCreate" type="primary" icon="Plus" @click="openCreate">បន្ថែម</el-button>
       </div>
     </div>
@@ -172,9 +250,27 @@ defineExpose({ load, openCreate, openEdit })
             <FormField v-model="filters[f.key]" :field="f" />
           </div>
         </el-form-item>
+        <template v-if="cfg.auditFilters && showMore">
+          <el-form-item label="អ្នកបញ្ចូល">
+            <el-select v-model="filters.created_by" clearable filterable style="width: 180px">
+              <el-option v-for="u in users" :key="u.id" :value="u.id" :label="u.full_name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="ថ្ងៃបញ្ចូល">
+            <el-date-picker v-model="createdRange" type="daterange" value-format="YYYY-MM-DD" format="DD/MM/YYYY"
+                            start-placeholder="ពីថ្ងៃ" end-placeholder="ដល់ថ្ងៃ" style="width: 260px" />
+          </el-form-item>
+          <el-form-item label="ថ្ងៃកែចុងក្រោយ">
+            <el-date-picker v-model="updatedRange" type="daterange" value-format="YYYY-MM-DD" format="DD/MM/YYYY"
+                            start-placeholder="ពីថ្ងៃ" end-placeholder="ដល់ថ្ងៃ" style="width: 260px" />
+          </el-form-item>
+        </template>
         <el-form-item>
           <el-button type="primary" native-type="submit" icon="Search">ស្វែងរក</el-button>
           <el-button icon="RefreshLeft" @click="resetFilters">សម្អាត</el-button>
+          <el-button v-if="cfg.auditFilters" link type="primary" @click="showMore = !showMore">
+            {{ showMore ? 'លាក់ការស្វែងរកលម្អិត' : 'អ្នកបញ្ចូល / ថ្ងៃបញ្ចូល' }}
+          </el-button>
         </el-form-item>
       </el-form>
     </el-card>

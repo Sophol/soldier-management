@@ -79,3 +79,17 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(String(255))
+
+
+class SavedFilter(TimestampMixin, Base):
+    """A list filter kept for reuse (Saved filter): its owner's, or shared with every user of the module."""
+
+    __tablename__ = "saved_filters"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    module: Mapped[str] = mapped_column(String(50), index=True)  # the list's page key, e.g. "soldiers", "docIn"
+    name: Mapped[str] = mapped_column(String(150))
+    params: Mapped[dict] = mapped_column(JSON)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    user = relationship("User", lazy="joined")

@@ -1,12 +1,15 @@
 """Conscription (ការងារជ្រើសរើសទ័ព និងយោធិនបម្រុង — យុវជនបំពេញកាតព្វកិច្ចយោធា): people, their registrations,
 medical exams (separate permission: health data) and service periods."""
 
+from datetime import date
+from operator import eq, ge, le
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, object_session
 
-from app.api.crud import crud_router
+from app.api.crud import audit_filters, crud_router
 from app.core.database import get_db
 from app.core.deps import get_current_user, require
 from app.models import (
@@ -22,7 +25,13 @@ from app.models import (
     Unit,
     User,
 )
-from app.models.conscript import EXEMPTION_REASONS, MEDICAL_RESULTS, REGISTRATION_STATUSES
+from app.models.conscript import (
+    EXEMPTION_REASONS,
+    MEDICAL_RESULTS,
+    REGISTRATION_STATUSES,
+    SERVICE_STATUSES,
+    SERVICE_TYPES,
+)
 from app.schemas import ConscriptIn, ConscriptMedicalIn, ConscriptRegistrationIn, ConscriptServiceIn
 from app.services.common import audit, delete_storage_file, paginate, save_upload, storage_file, to_dict, unit_subtree_ids
 from app.services.soldier import age, years_ago
@@ -34,7 +43,8 @@ router = APIRouter()
 def conscription_meta(_: User = Depends(get_current_user)):
     as_options = lambda d: [{"value": k, "label": v} for k, v in d.items()]  # noqa: E731
     return {"statuses": as_options(REGISTRATION_STATUSES), "reasons": as_options(EXEMPTION_REASONS),
-            "results": as_options(MEDICAL_RESULTS)}
+            "results": as_options(MEDICAL_RESULTS), "service_types": as_options(SERVICE_TYPES),
+            "service_statuses": as_options(SERVICE_STATUSES)}
 
 
 # ---------------- people ----------------
@@ -60,6 +70,12 @@ def conscript_out(db: Session, c: Conscript) -> dict:
             "rank_name": sv.rank.name_kh if sv and sv.rank else None, "role": sv.role if sv else None,
             "unit_name": (sv.unit.name_kh if sv.unit else sv.unit_text) if sv else None,
             "service_start": sv.start_date.isoformat() if sv and sv.start_date else None,
+            "service_end": sv.end_date.isoformat() if sv and sv.end_date else None,
+            "service_type": sv.service_type if sv else None, "service_type_name": SERVICE_TYPES.get(sv.service_type) if sv else None,
+            "service_status": sv.status if sv else None,
+            "service_status_name": SERVICE_STATUSES.get(sv.status) if sv else None,
+            "reserve_unit_name": (sv.reserve_unit.name_kh if sv.reserve_unit else sv.reserve_unit_text) if sv else None,
+            "post_service_status": sv.post_service_status if sv else None,
             "specialty_name": name(Specialty, c.specialty_id), "blood_type_name": name(Lookup, c.blood_type_id),
             "status": reg.status if reg else None,
             "status_name": REGISTRATION_STATUSES.get(reg.status) if reg else None,
@@ -77,14 +93,19 @@ def _get_conscript(db: Session, conscript_id: int) -> Conscript:
 
 # registered before the generic CRUD routes so that GET /conscripts uses these filters
 @router.get("/conscripts", tags=["conscripts"])
-def list_conscripts(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500), q: str | None = None,
+def list_conscripts(request: Request, page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500), q: str | None = None,
                     gender: str | None = None, status: str | None = None, registration_year: int | None = None,
                     province_id: int | None = None, education_level_id: int | None = None,
                     specialty_id: int | None = None, section_id: int | None = None, blood_type_id: int | None = None,
                     marital_status_id: int | None = None, rank_id: int | None = None, unit_id: int | None = None,
-                    age_min: int | None = None, age_max: int | None = None, db: Session = Depends(get_db),
+                    age_min: int | None = None, age_max: int | None = None, service_type: str | None = None,
+                    service_status: str | None = None, reserve_unit_id: int | None = None,
+                    service_from: date | None = None, service_to: date | None = None,
+                    service_end_from: date | None = None, service_end_to: date | None = None,
+                    phone: str | None = None, db: Session = Depends(get_db),
                     _: User = Depends(require("conscripts", "view"))):
-    """Filters on status / year / province look at the person's registrations."""
+    """Filters on status / year / province look at the person's registrations; the service filters (type, status,
+    unit, reserve unit, rank, start / end date) at any of their service periods."""
     stmt = select(Conscript).where(Conscript.deleted_at.is_(None))
     if q:
         like = f"%{q}%"
@@ -103,13 +124,20 @@ def list_conscripts(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=5
         stmt = stmt.where(Conscript.date_of_birth <= years_ago(age_min))
     if age_max is not None:
         stmt = stmt.where(Conscript.date_of_birth > years_ago(age_max + 1))
-    if rank_id or unit_id:  # by any service period (the unit filter includes sub-units)
-        sv = select(ConscriptService.conscript_id).where(ConscriptService.deleted_at.is_(None))
-        if rank_id:
-            sv = sv.where(ConscriptService.rank_id == rank_id)
-        if unit_id:
-            sv = sv.where(ConscriptService.unit_id.in_(unit_subtree_ids(db, unit_id)))
-        stmt = stmt.where(Conscript.id.in_(sv))
+    if phone:
+        stmt = stmt.where(Conscript.phone.ilike(f"%{phone}%"))
+    sv = ConscriptService
+    service_conds = [op(col, val) for col, op, val in (
+        (sv.rank_id, eq, rank_id), (sv.service_type, eq, service_type), (sv.status, eq, service_status),
+        (sv.start_date, ge, service_from), (sv.start_date, le, service_to),
+        (sv.end_date, ge, service_end_from), (sv.end_date, le, service_end_to)) if val]
+    if unit_id:  # the unit filters include sub-units
+        service_conds.append(ConscriptService.unit_id.in_(unit_subtree_ids(db, unit_id)))
+    if reserve_unit_id:
+        service_conds.append(ConscriptService.reserve_unit_id.in_(unit_subtree_ids(db, reserve_unit_id)))
+    if service_conds:  # all on the same service period
+        stmt = stmt.where(Conscript.id.in_(select(ConscriptService.conscript_id).where(
+            ConscriptService.deleted_at.is_(None), *service_conds)))
     if status or registration_year or province_id:
         reg = select(ConscriptRegistration.conscript_id).where(ConscriptRegistration.deleted_at.is_(None))
         if status:
@@ -119,6 +147,7 @@ def list_conscripts(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=5
         if province_id:
             reg = reg.where(ConscriptRegistration.province_id == province_id)
         stmt = stmt.where(Conscript.id.in_(reg))
+    stmt = audit_filters(stmt, Conscript, request.query_params)
     items, total = paginate(db, stmt.order_by(Conscript.id.desc()), page, size)
     return {"items": [conscript_out(db, c) for c in items], "total": total, "page": page, "size": size}
 
@@ -189,13 +218,17 @@ def _service_before(db, user, obj, data, is_new):
         raise HTTPException(400, "ថ្ងៃបញ្ចប់ត្រូវនៅក្រោយថ្ងៃចាប់ផ្ដើម")
     if data.get("unit_id") and not db.get(Unit, data["unit_id"]):
         raise HTTPException(400, "អង្គភាពមិនត្រឹមត្រូវ")
+    if data.get("reserve_unit_id") and not db.get(Unit, data["reserve_unit_id"]):
+        raise HTTPException(400, "អង្គភាពបម្រុងមិនត្រឹមត្រូវ")
     if data.get("rank_id") and not db.get(Rank, data["rank_id"]):
         raise HTTPException(400, "ឋានន្តរស័ក្តិមិនត្រឹមត្រូវ")
 
 
 def service_out(sv: ConscriptService) -> dict:
     return {**to_dict(sv), "conscript_name": sv.conscript.name_kh,
-            "unit_name": sv.unit.name_kh if sv.unit else sv.unit_text, "rank_name": sv.rank.name_kh if sv.rank else None}
+            "unit_name": sv.unit.name_kh if sv.unit else sv.unit_text, "rank_name": sv.rank.name_kh if sv.rank else None,
+            "reserve_unit_name": sv.reserve_unit.name_kh if sv.reserve_unit else sv.reserve_unit_text,
+            "service_type_name": SERVICE_TYPES.get(sv.service_type), "status_name": SERVICE_STATUSES.get(sv.status)}
 
 
 router.include_router(crud_router(
@@ -216,7 +249,8 @@ router.include_router(crud_router(
 ))
 router.include_router(crud_router(
     prefix="/conscript-services", model=ConscriptService, module="conscripts", schema=ConscriptServiceIn,
-    filter_fields={"conscript_id": ConscriptService.conscript_id},
+    filter_fields={"conscript_id": ConscriptService.conscript_id, "service_type": ConscriptService.service_type,
+                   "status": ConscriptService.status},
     order_by=(ConscriptService.start_date.desc(), ConscriptService.id.desc()),
     serialize=service_out, before_save=_service_before, tags=["conscripts"],
 ))

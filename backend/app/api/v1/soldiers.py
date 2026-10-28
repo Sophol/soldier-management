@@ -1,7 +1,7 @@
 """Soldier records (គ្រប់គ្រងយោធិន): CRUD, search, photo, attachments, history, full profile."""
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -58,6 +58,7 @@ from app.services.soldier import (
     years_ago,
     ym_text,
 )
+from app.services.staffing import serving
 
 router = APIRouter(prefix="/soldiers", tags=["soldiers"])
 
@@ -68,13 +69,43 @@ SORTS = {
     "date_of_birth": Soldier.date_of_birth,
     "rank_date": Soldier.rank_date,
     "created_at": Soldier.created_at,
+    "updated_at": Soldier.updated_at,
+}
+
+HOUSING = {"own": "ផ្ទះផ្ទាល់", "rent": "ជួល", "stay": "ស្នាក់"}
+
+# ទិន្នន័យខ្វះ (same checks as the dashboard alerts), for the `missing` filter
+MISSING = {
+    "photo": or_(Soldier.photo_path.is_(None), Soldier.photo_path == ""),
+    "dob": Soldier.date_of_birth.is_(None),
+    "enlistment": Soldier.enlistment_date.is_(None),
+    "rank_date": Soldier.rank_date.is_(None),
+    "national_id": or_(Soldier.national_id.is_(None), Soldier.national_id == ""),
+    "unit": Soldier.current_unit_id.is_(None),
+    "phone": or_(Soldier.phone.is_(None), Soldier.phone == ""),
+    "attachments": ~select(SoldierAttachment.id).where(SoldierAttachment.soldier_id == Soldier.id).exists(),
 }
 
 
-def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=None, unit_id=None,
+def _villages_in(province_id: int | None, district_id: int | None):
+    stmt = select(Village.id).join(Commune).join(District)
+    if district_id:
+        return stmt.where(District.id == district_id)
+    return stmt.where(District.province_id == province_id)
+
+
+def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=None, branch=None, unit_id=None,
                 position_id=None, status_id=None, gender=None, age_min=None, age_max=None,
-                enlist_year=None, specialty_id=None, birth_province_id=None, education_level_id=None,
-                military_ids=None, section_id=None, sort="rank", order="desc") -> Select:
+                enlist_year=None, specialty_id=None, birth_province_id=None, birth_district_id=None,
+                current_province_id=None, current_district_id=None, education_level_id=None, blood_type_id=None,
+                marital_status_id=None, language_id=None, phone=None, military_ids=None, section_id=None,
+                dob_from=None, dob_to=None, enlist_from=None, enlist_to=None, rank_date_from=None, rank_date_to=None,
+                position_date_from=None, position_date_to=None, service_min=None, service_max=None,
+                in_rank_min=None, in_position_min=None, missing=None, has_attachments=None, retire_within=None,
+                promotion_due=False, serving_only=False, nationality=None, ethnicity=None, id_expiry=None,
+                housing_status=None, base_province_id=None, base_district_id=None, voting_province_id=None,
+                voting_district_id=None, dependents_min=None, created_by=None, created_from=None, created_to=None, updated_from=None,
+                updated_to=None, sort="rank", order="desc") -> Select:
     stmt = select(Soldier).where(Soldier.deleted_at.is_(None))
     scope = scope_unit_ids(db, user)
     if scope is not None:
@@ -92,18 +123,37 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
         stmt = stmt.where(Soldier.current_rank_id == rank_id)
     if rank_class_id:
         stmt = stmt.where(Soldier.current_rank_id.in_(select(Rank.id).where(Rank.rank_class_id == rank_class_id)))
+    if branch:  # ប្រភេទស័ក្តិ ជើងគោក / ជើងទឹក (ranks marked "all" belong to both)
+        stmt = stmt.where(Soldier.current_rank_id.in_(select(Rank.id).where(Rank.branch.in_([branch, "all"]))))
     if unit_id:
         stmt = stmt.where(Soldier.current_unit_id.in_(unit_subtree_ids(db, unit_id)))
     if position_id:
         stmt = stmt.where(Soldier.current_position_id == position_id)
     if status_id:
         stmt = stmt.where(Soldier.status_id == status_id)
+    if serving_only:  # still in the strength, as the dashboard counts
+        stmt = serving(stmt)
     if gender:
         stmt = stmt.where(Soldier.gender == gender)
     if age_min is not None:
         stmt = stmt.where(Soldier.date_of_birth <= years_ago(age_min))
     if age_max is not None:
         stmt = stmt.where(Soldier.date_of_birth > years_ago(age_max + 1))
+    if service_min is not None:  # ឆ្នាំសេវា
+        stmt = stmt.where(Soldier.enlistment_date <= years_ago(service_min))
+    if service_max is not None:
+        stmt = stmt.where(Soldier.enlistment_date > years_ago(service_max + 1))
+    if in_rank_min is not None:  # រយៈពេលកាន់ស័ក្តិបច្ចុប្បន្ន (យ៉ាងតិច)
+        stmt = stmt.where(Soldier.rank_date <= years_ago(in_rank_min))
+    if in_position_min is not None:  # រយៈពេលកាន់មុខតំណែង (យ៉ាងតិច)
+        stmt = stmt.where(Soldier.position_date <= years_ago(in_position_min))
+    for col, lo, hi in ((Soldier.date_of_birth, dob_from, dob_to), (Soldier.enlistment_date, enlist_from, enlist_to),
+                        (Soldier.rank_date, rank_date_from, rank_date_to),
+                        (Soldier.position_date, position_date_from, position_date_to)):
+        if lo:
+            stmt = stmt.where(col >= lo)
+        if hi:
+            stmt = stmt.where(col <= hi)
     if enlist_year:
         stmt = stmt.where(extract("year", Soldier.enlistment_date) == enlist_year)
     if specialty_id:
@@ -112,9 +162,65 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
         stmt = stmt.where(Soldier.specialty_id.in_(select(Specialty.id).where(Specialty.section_id == section_id)))
     if education_level_id:
         stmt = stmt.where(Soldier.education_level_id == education_level_id)
-    if birth_province_id:
-        stmt = stmt.where(Soldier.birth_village_id.in_(
-            select(Village.id).join(Commune).join(District).where(District.province_id == birth_province_id)))
+    if blood_type_id:
+        stmt = stmt.where(Soldier.blood_type_id == blood_type_id)
+    if marital_status_id:
+        stmt = stmt.where(Soldier.marital_status_id == marital_status_id)
+    if language_id:
+        stmt = stmt.where(Soldier.id.in_(select(SoldierLanguage.soldier_id).where(SoldierLanguage.language_id == language_id)))
+    if phone:
+        stmt = stmt.where(Soldier.phone.ilike(f"%{phone}%"))
+    if nationality:
+        stmt = stmt.where(Soldier.nationality.ilike(f"%{nationality}%"))
+    if ethnicity:
+        stmt = stmt.where(Soldier.ethnicity.ilike(f"%{ethnicity}%"))
+    if id_expiry == "expired":  # អត្តសញ្ញាណប័ណ្ណផុតកំណត់ហើយ
+        stmt = stmt.where(Soldier.national_id_expiry < date.today())
+    elif id_expiry == "soon":  # ជិតផុត: within the alert horizon (setting alert_months_ahead)
+        from app.api.v1.system import get_setting
+
+        months = int(get_setting(db, "alert_months_ahead", "6") or 6)
+        stmt = stmt.where(Soldier.national_id_expiry.between(date.today(), date.today() + timedelta(days=months * 30)))
+    elif id_expiry == "missing":
+        stmt = stmt.where(Soldier.national_id_expiry.is_(None))
+    if housing_status:
+        stmt = stmt.where(Soldier.housing_status == housing_status)
+    if dependents_min is not None:
+        stmt = stmt.where(Soldier.dependents_count >= dependents_min)
+    if base_province_id or base_district_id:
+        stmt = stmt.where(Soldier.base_village_id.in_(_villages_in(base_province_id, base_district_id)))
+    if voting_province_id or voting_district_id:
+        stmt = stmt.where(Soldier.voting_village_id.in_(_villages_in(voting_province_id, voting_district_id)))
+    if birth_province_id or birth_district_id:
+        stmt = stmt.where(Soldier.birth_village_id.in_(_villages_in(birth_province_id, birth_district_id)))
+    if current_province_id or current_district_id:
+        stmt = stmt.where(Soldier.current_village_id.in_(_villages_in(current_province_id, current_district_id)))
+    for key in (missing or "").split(","):
+        if key in MISSING:
+            stmt = stmt.where(MISSING[key])
+    if has_attachments in ("yes", "no"):
+        stmt = stmt.where(MISSING["attachments"] if has_attachments == "no" else ~MISSING["attachments"])
+    if retire_within or promotion_due:
+        # local import: reports imports a lot
+        from app.api.v1.reports import promotion_due as due_for_promotion
+        from app.api.v1.reports import retiring_by
+
+        if retire_within:  # ជិតនិវត្ត ក្នុង N ឆ្នាំ (serving soldiers; those already past the age are included)
+            horizon = years_ago(-retire_within)
+            ids = [s.id for s, _ in retiring_by(db, serving(select(Soldier)), horizon)]
+            stmt = stmt.where(Soldier.id.in_(ids))
+        if promotion_due:  # គ្រប់ឆ្នាំឡើងស័ក្តិ
+            stmt = stmt.where(Soldier.id.in_([s.id for s in due_for_promotion(db, user)]))
+    if created_by:
+        stmt = stmt.where(Soldier.created_by == created_by)
+    if created_from:
+        stmt = stmt.where(Soldier.created_at >= created_from)
+    if created_to:
+        stmt = stmt.where(Soldier.created_at < created_to + timedelta(days=1))
+    if updated_from:
+        stmt = stmt.where(Soldier.updated_at >= updated_from)
+    if updated_to:
+        stmt = stmt.where(Soldier.updated_at < updated_to + timedelta(days=1))
     if sort == "rank":
         stmt = stmt.outerjoin(Rank, Rank.id == Soldier.current_rank_id)
         col = Rank.sort_order
@@ -126,11 +232,27 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
 
 
 def _filters(
-    q: str | None = None, rank_id: int | None = None, rank_class_id: int | None = None,
+    q: str | None = None, rank_id: int | None = None, rank_class_id: int | None = None, branch: str | None = None,
     unit_id: int | None = None, position_id: int | None = None, status_id: int | None = None,
     gender: str | None = None, age_min: int | None = None, age_max: int | None = None,
     enlist_year: int | None = None, specialty_id: int | None = None, birth_province_id: int | None = None,
-    education_level_id: int | None = None, military_ids: str | None = None, section_id: int | None = None,
+    birth_district_id: int | None = None, current_province_id: int | None = None,
+    current_district_id: int | None = None, education_level_id: int | None = None, blood_type_id: int | None = None,
+    marital_status_id: int | None = None, language_id: int | None = None, phone: str | None = None,
+    military_ids: str | None = None, section_id: int | None = None,
+    dob_from: date | None = None, dob_to: date | None = None, enlist_from: date | None = None,
+    enlist_to: date | None = None, rank_date_from: date | None = None, rank_date_to: date | None = None,
+    position_date_from: date | None = None, position_date_to: date | None = None,
+    service_min: int | None = None, service_max: int | None = None, in_rank_min: int | None = None,
+    in_position_min: int | None = None, missing: str | None = None, has_attachments: str | None = None,
+    retire_within: int | None = Query(None, ge=0, le=60), promotion_due: bool = False,
+    serving_only: bool = Query(False, alias="serving"),
+    nationality: str | None = None, ethnicity: str | None = None,
+    id_expiry: str | None = Query(None, pattern="^(soon|expired|missing)$"), housing_status: str | None = None,
+    base_province_id: int | None = None, base_district_id: int | None = None, voting_province_id: int | None = None,
+    voting_district_id: int | None = None, dependents_min: int | None = None,
+    created_by: int | None = None, created_from: date | None = None, created_to: date | None = None,
+    updated_from: date | None = None, updated_to: date | None = None,
     sort: str = "rank", order: str = "desc",
 ) -> dict:
     return {k: v for k, v in locals().items()}
@@ -472,7 +594,8 @@ def soldier_profile(soldier_id: int, db: Session = Depends(get_db), user: User =
         lg["language_name"] = lk.get(lg["language_id"])
     from app.api.v1.master import village_path  # local import to avoid a cycle
 
-    for key in ("birth_village_id", "current_village_id"):
+    d["housing_status_name"] = HOUSING.get(s.housing_status)
+    for key in ("birth_village_id", "current_village_id", "base_village_id", "voting_village_id"):
         vid = getattr(s, key)
         d[key.replace("_id", "_text")] = village_path(vid, db, user)["text"] if vid else None
     d["history"] = history_rows(db, s.id)

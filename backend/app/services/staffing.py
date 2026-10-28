@@ -24,6 +24,13 @@ def filled_by_unit_position(db: Session, unit_id: int) -> dict[int, int]:
     return dict(db.execute(stmt).all())
 
 
+def filled_column():
+    """Correlated SQL count of serving soldiers in a staffing-table row (UnitPosition), for filtering."""
+    return serving(select(func.count(Soldier.id))).where(
+        Soldier.current_unit_id == UnitPosition.unit_id, Soldier.current_position_id == UnitPosition.position_id,
+    ).correlate(UnitPosition).scalar_subquery()
+
+
 def filled_by_rank(db: Session) -> dict[int, int]:
     stmt = serving(select(Soldier.current_rank_id, func.count(Soldier.id))).group_by(Soldier.current_rank_id)
     return dict(db.execute(stmt).all())

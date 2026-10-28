@@ -24,6 +24,10 @@ const config = computed(() => ({
     { key: 'ranks', label: 'បណ្ដាស័ក្តិ', minWidth: 200, value: (r) => (r.min_rank_name || r.max_rank_name ? `${r.min_rank_name || '...'} – ${r.max_rank_name || '...'}` : '') },
     { key: 'salary_effective', label: 'ប្រាក់បៀវត្សមុខតំណែង', width: 170, value: (r) => money(r.salary_effective) },
   ],
+  // ក្របខណ្ឌទំនេរ / ខ្វះ / លើស
+  filters: [{ key: 'position_id', label: 'មុខតំណែង', type: 'select', options: positionOptions, width: '200px' },
+    { key: 'fill', label: 'ក្របខណ្ឌ', type: 'select', width: '170px', options: [
+      { value: 'vacant', label: 'នៅទំនេរ (ខ្វះ)' }, { value: 'full', label: 'គ្រប់ចំនួន' }, { value: 'over', label: 'លើសក្របខណ្ឌ' }] }],
   fields: [
     { key: 'unit_id', label: 'អង្គភាព', type: 'unit', required: true },
     { key: 'position_id', label: 'មុខតំណែង', type: 'select', required: true, options: positionOptions, span: 12 },

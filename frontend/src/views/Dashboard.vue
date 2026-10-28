@@ -94,15 +94,16 @@ const alerts = computed(() => {
   const a = data.value?.alerts
   if (!a) return []
   return [
-    { label: 'គ្រប់លក្ខខណ្ឌដំឡើងឋានន្តរស័ក្តិ', value: a.promotion_due, type: 'success', to: '/reports?key=promotion_due' },
+    { label: 'គ្រប់លក្ខខណ្ឌដំឡើងឋានន្តរស័ក្តិ', value: a.promotion_due, type: 'success', to: '/soldiers?promotion_due=true' },
     { label: 'ជិតដល់អាយុចូលនិវត្តន៍', value: a.retirement_due, type: 'warning', to: '/reports?key=retirement_due' },
-    { label: 'ទណ្ឌកម្មផុតកំណត់ក្នុង ៣០ ថ្ងៃ', value: a.discipline_ending, type: 'info', to: '/discipline' },
-    { label: 'ខ្វះរូបថត', value: a.missing_photo, type: 'danger', to: '/soldiers' },
-    { label: 'ខ្វះលេខអត្តសញ្ញាណប័ណ្ណ', value: a.missing_national_id, type: 'danger', to: '/soldiers' },
-    { label: 'មិនទាន់មានអង្គភាព', value: a.missing_unit, type: 'danger', to: '/soldiers' },
-    { label: 'ខ្វះថ្ងៃខែឆ្នាំកំណើត', value: a.missing_dob, type: 'danger', to: '/soldiers' },
-    { label: 'ខ្វះថ្ងៃខែឆ្នាំចូលទ័ព', value: a.missing_enlistment, type: 'danger', to: '/soldiers' },
-    { label: 'ខ្វះថ្ងៃខែឆ្នាំឡើងស័ក្តិ', value: a.missing_rank_date, type: 'danger', to: '/soldiers' },
+    { label: 'ទណ្ឌកម្មផុតកំណត់ក្នុង ៣០ ថ្ងៃ', value: a.discipline_ending, type: 'info', to: '/discipline?status=active' },
+    { label: 'អត្តសញ្ញាណប័ណ្ណយោធិនផុតកំណត់ក្នុង ៣០ ថ្ងៃ', value: a.cards_expiring, type: 'warning', to: '/id-cards?expiring_within=30' },
+    { label: 'ខ្វះរូបថត', value: a.missing_photo, type: 'danger', to: '/soldiers?serving=true&missing=photo' },
+    { label: 'ខ្វះលេខអត្តសញ្ញាណប័ណ្ណ', value: a.missing_national_id, type: 'danger', to: '/soldiers?serving=true&missing=national_id' },
+    { label: 'មិនទាន់មានអង្គភាព', value: a.missing_unit, type: 'danger', to: '/soldiers?serving=true&missing=unit' },
+    { label: 'ខ្វះថ្ងៃខែឆ្នាំកំណើត', value: a.missing_dob, type: 'danger', to: '/soldiers?serving=true&missing=dob' },
+    { label: 'ខ្វះថ្ងៃខែឆ្នាំចូលទ័ព', value: a.missing_enlistment, type: 'danger', to: '/soldiers?serving=true&missing=enlistment' },
+    { label: 'ខ្វះថ្ងៃខែឆ្នាំឡើងស័ក្តិ', value: a.missing_rank_date, type: 'danger', to: '/soldiers?serving=true&missing=rank_date' },
   ]
 })
 

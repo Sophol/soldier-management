@@ -116,6 +116,7 @@ LOOKUPS = {
         ("active", "កំពុងបម្រើការងារ", "Active"), ("studying", "កំពុងសិក្សា", "Studying"),
         ("suspended", "ព្យួរការងារ", "Suspended"), ("retired", "និវត្តន៍", "Retired"),
         ("category2", "យោធិនប្រភេទ២", "Category 2"), ("separated", "ចេញពីជួរ", "Separated"),
+        ("deceased", "ស្លាប់", "Deceased"),
     ],
     "education_level": [
         (None, "បឋមសិក្សា", "Primary"), (None, "អនុវិទ្យាល័យ", "Lower secondary"),

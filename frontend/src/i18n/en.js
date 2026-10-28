@@ -37,6 +37,7 @@ export default {
     shortCourses: 'Short courses',
     discipline: 'Discipline',
     awards: 'Commendations & medals',
+    idCards: 'Military ID cards',
     retirement: 'Retirement & category 2',
     separation: 'Leaving service',
     recruitment: 'Recruitment & reserves',

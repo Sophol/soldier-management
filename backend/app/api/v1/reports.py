@@ -13,7 +13,14 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.conscripts import registration_counts
 from app.api.v1.decisions import IN_PROGRESS, can_act_at, overdue_cutoff
-from app.api.v1.records import MOVEMENT_REASONS, RETIREMENT_TYPES
+from app.api.v1.records import (
+    CASE_STATUS,
+    DISCIPLINE_STATUS,
+    MOVEMENT_REASONS,
+    PARTICIPANT_STATUS,
+    RETIREMENT_TYPES,
+    discipline_status,
+)
 from app.api.v1.system import get_setting
 from app.core.database import get_db
 from app.core.deps import require
@@ -27,6 +34,7 @@ from app.models import (
     DocumentOutgoing,
     DocumentType,
     Lookup,
+    MilitaryCard,
     Position,
     Province,
     Rank,
@@ -88,12 +96,16 @@ def retirement_age(s: Soldier, by_gender: dict[str, int]) -> int:
 
 def retirement_due(db: Session, user: User, unit_id: int | None = None) -> list[tuple[Soldier, date]]:
     months = int(get_setting(db, "alert_months_ahead", "6") or 6)
+    return retiring_by(db, active_soldiers(db, user, unit_id), date.today() + timedelta(days=months * 30))
+
+
+def retiring_by(db: Session, stmt, horizon: date) -> list[tuple[Soldier, date]]:
+    """Soldiers of `stmt` who reach their retirement age on or before `horizon`, with that date (soonest first)."""
     by_gender = {"M": int(get_setting(db, "retirement_age_male", "60") or 60),
                  "F": int(get_setting(db, "retirement_age_female", "55") or 55)}
-    horizon = date.today() + timedelta(days=months * 30)
     # nobody can be due before the youngest possible retirement age: filter in SQL first
     youngest = min([*by_gender.values(), *(a for a in db.scalars(select(Rank.retirement_age)) if a)])
-    stmt = active_soldiers(db, user, unit_id).where(Soldier.date_of_birth <= _add_years(horizon, -youngest))
+    stmt = stmt.where(Soldier.date_of_birth <= _add_years(horizon, -youngest))
     out = []
     for s in db.scalars(stmt).unique():
         retire_on = _add_years(s.date_of_birth, retirement_age(s, by_gender))
@@ -161,7 +173,14 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
             series[direction][key] = c
 
     disc_ending = db.scalar(select(func.count(DisciplineRecord.id)).where(
-        DisciplineRecord.deleted_at.is_(None), DisciplineRecord.end_date.between(today, today + timedelta(days=30))))
+        DisciplineRecord.deleted_at.is_(None), DisciplineRecord.cancelled.is_(False),
+        DisciplineRecord.end_date.between(today, today + timedelta(days=30))))
+    cards_stmt = select(func.count(MilitaryCard.id)).join(Soldier, Soldier.id == MilitaryCard.soldier_id).where(
+        MilitaryCard.deleted_at.is_(None), MilitaryCard.status == "issued", Soldier.deleted_at.is_(None),
+        MilitaryCard.expiry_date.between(today, today + timedelta(days=30)))
+    if scope is not None:
+        cards_stmt = cards_stmt.where(Soldier.current_unit_id.in_(scope))
+    cards_expiring = db.scalar(cards_stmt)
 
     return {
         "total_active": len(soldiers),
@@ -178,6 +197,7 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
             "promotion_due": len(promotion_due(db, user)),
             "retirement_due": len(retirement_due(db, user)),
             "discipline_ending": disc_ending,
+            "cards_expiring": cards_expiring,
             "missing_photo": sum(1 for s in soldiers if not s.photo_path),
             "missing_national_id": sum(1 for s in soldiers if not s.national_id),
             "missing_unit": sum(1 for s in soldiers if not s.current_unit_id),
@@ -431,7 +451,7 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
 
     elif key == "training":
         cols = [("course", "វគ្គ"), ("course_type", "ប្រភេទ"), ("level", "កម្រិត"), ("where", "ក្នុង/ក្រៅប្រទេស"),
-                ("start_date", "ចាប់ពី"), ("end_date", "ដល់")] + SOLDIER_COLS + [("result", "លទ្ធផល")]
+                ("start_date", "ចាប់ពី"), ("end_date", "ដល់")] + SOLDIER_COLS + [("participant_status", "ស្ថានភាព"), ("result", "លទ្ធផល")]
         cambodia = db.scalar(select(Country.id).where(Country.name_en == "Cambodia"))
         stmt = select(TrainingCourse, TrainingParticipant).join(
             TrainingParticipant, TrainingParticipant.course_id == TrainingCourse.id).where(
@@ -444,14 +464,19 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
                          "where": "ក្រៅប្រទេស" if c.country_id and c.country_id != cambodia else "ក្នុងប្រទេស",
                          "start_date": c.start_date.isoformat() if c.start_date else "",
                          "end_date": c.end_date.isoformat() if c.end_date else "",
-                         **_soldier_cells(p.soldier), "result": p.result or ""})
+                         **_soldier_cells(p.soldier), "result": p.result or "",
+                         "participant_status": PARTICIPANT_STATUS.get(p.status, "")})
 
     elif key in ("discipline", "awards", "retirement", "separation"):
         model, date_col, extra = {
             "discipline": (DisciplineRecord, DisciplineRecord.decision_date,
-                           [("type", "ប្រភេទទណ្ឌកម្ម"), ("reason", "មូលហេតុ")]),
-            "awards": (AwardRecord, AwardRecord.decision_date, [("type", "ប្រភេទ"), ("reason", "មូលហេតុ")]),
-            "retirement": (RetirementRecord, RetirementRecord.effective_date, [("type", "ប្រភេទ"), ("notes", "កំណត់សម្គាល់")]),
+                           [("type", "ប្រភេទទណ្ឌកម្ម"), ("level", "កម្រិត"), ("reason", "មូលហេតុ"),
+                            ("status", "ស្ថានភាព")]),
+            "awards": (AwardRecord, AwardRecord.decision_date, [("type", "ប្រភេទ"), ("level", "កម្រិត/ថ្នាក់"),
+                                                                ("by", "អ្នកផ្ដល់"), ("reason", "មូលហេតុ")]),
+            "retirement": (RetirementRecord, RetirementRecord.effective_date, [("type", "ប្រភេទ"),
+                                                                              ("status", "ស្ថានភាពសំណុំរឿង"),
+                                                                              ("notes", "កំណត់សម្គាល់")]),
             "separation": (SeparationRecord, SeparationRecord.effective_date, [("type", "មូលហេតុ"), ("notes", "កំណត់សម្គាល់")]),
         }[key]
         cols = [("decision_no", "លេខលិខិត"), ("date", "កាលបរិច្ឆេទ")] + SOLDIER_COLS + [("unit_name", "អង្គភាព")] + extra
@@ -459,18 +484,22 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
         if key == "retirement" and kind:  # pension / voluntary / category2
             stmt = stmt.where(RetirementRecord.type == kind)
         for r in db.scalars(stmt.order_by(date_col)).unique():
+            status = ""
             if key == "discipline":
                 t = r.discipline_type.name_kh if r.discipline_type else ""
+                status = DISCIPLINE_STATUS[discipline_status(r)]
             elif key == "awards":
                 t = r.award_type.name_kh if r.award_type else ""
             elif key == "retirement":
                 t = RETIREMENT_TYPES.get(r.type, r.type)
+                status = CASE_STATUS.get(r.case_status, "")
             else:
                 t = r.reason.name_kh if r.reason else ""
             dval = getattr(r, date_col.key)
             rows.append({"decision_no": r.decision_no or "", "date": dval.isoformat() if dval else "",
                          **_soldier_cells(r.soldier), "type": t, "reason": getattr(r, "reason", "") if key in ("discipline", "awards") else "",
-                         "notes": getattr(r, "notes", "") or ""})
+                         "notes": getattr(r, "notes", "") or "", "level": getattr(r, "level", "") or "",
+                         "by": getattr(r, "awarded_by", "") or "", "status": status})
 
     elif key == "conscripts":
         cols = [("province", "រាជធានី/ខេត្ត")] + [(st, label) for st, label in REGISTRATION_STATUSES.items()] + \

@@ -6,6 +6,7 @@ from app.models.org import DocumentType, Lookup, Position, Rank, RankClass, Spec
 from app.models.records import (
     AwardRecord,
     DisciplineRecord,
+    MilitaryCard,
     RetirementRecord,
     SeparationRecord,
     StrengthMovement,
@@ -20,14 +21,14 @@ from app.models.soldier import (
     SoldierHistory,
     SoldierLanguage,
 )
-from app.models.user import AuditLog, Permission, Role, Setting, User
+from app.models.user import AuditLog, Permission, Role, SavedFilter, Setting, User
 
 __all__ = [
     "Conscript", "ConscriptMedical", "ConscriptRegistration", "ConscriptService", "DecisionStep",
     "AuditLog", "AwardRecord", "Commune", "Country", "Decision", "DecisionItem", "DisciplineRecord",
-    "District", "DocumentFile", "DocumentIncoming", "DocumentOutgoing", "DocumentType", "Lookup",
+    "District", "DocumentFile", "DocumentIncoming", "DocumentOutgoing", "DocumentType", "Lookup", "MilitaryCard",
     "Permission", "Position", "Province", "Rank", "RankClass", "RetirementRecord", "Role",
-    "SeparationRecord", "Setting", "Soldier", "SoldierAttachment", "SoldierChild", "SoldierEducation",
+    "SavedFilter", "SeparationRecord", "Setting", "Soldier", "SoldierAttachment", "SoldierChild", "SoldierEducation",
     "SoldierHistory", "SoldierLanguage", "Specialty", "StrengthMovement", "TrainingCourse",
     "TrainingParticipant", "Unit", "UnitPosition", "User", "Village",
 ]
