@@ -5,7 +5,8 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import Select, extract, or_, select
+from sqlalchemy import Select, extract, func, or_, select
+from sqlalchemy.dialects.mysql import match as mysql_match
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,7 @@ from app.services.common import (
     audit,
     check_unit_in_scope,
     delete_storage_file,
+    in_batches,
     names_by_id,
     paginate,
     save_upload,
@@ -51,14 +53,18 @@ from app.services.soldier import (
     add_history,
     add_movement,
     age,
+    dates_error,
     diff_ym,
+    format_military_id,
     is_inactive,
+    is_separated,
+    not_separated,
     soldier_summary,
     status_id_by_code,
     years_ago,
     ym_text,
 )
-from app.services.staffing import serving
+from app.services.staffing import serving, serving_clause
 
 router = APIRouter(prefix="/soldiers", tags=["soldiers"])
 
@@ -94,6 +100,21 @@ def _villages_in(province_id: int | None, district_id: int | None):
     return stmt.where(District.province_id == province_id)
 
 
+SEARCH_COLUMNS = (Soldier.name_kh, Soldier.name_latin, Soldier.military_id, Soldier.national_id, Soldier.phone)
+NGRAM_TOKEN_SIZE = 2  # MySQL's default ngram_token_size: shorter text cannot use the FULLTEXT index
+
+
+def search_clause(db: Session, q: str):
+    """Free-text search: q found anywhere in the name, Latin name, military ID, national ID or phone.
+    MySQL answers it from the ngram FULLTEXT index ft_soldiers_search (a phrase of ngrams = "contains");
+    PostgreSQL answers ILIKE '%q%' from the pg_trgm indexes. Both come from migration d4e7a1c90b52."""
+    q = q.strip()
+    if db.get_bind().dialect.name == "mysql" and len(q.replace('"', "")) >= NGRAM_TOKEN_SIZE:
+        return mysql_match(*SEARCH_COLUMNS, against='"' + q.replace('"', " ") + '"').in_boolean_mode()
+    like = f"%{q}%"
+    return or_(*(col.ilike(like) for col in SEARCH_COLUMNS))
+
+
 def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=None, branch=None, unit_id=None,
                 position_id=None, status_id=None, gender=None, age_min=None, age_max=None,
                 enlist_year=None, specialty_id=None, birth_province_id=None, birth_district_id=None,
@@ -106,18 +127,15 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
                 housing_status=None, base_province_id=None, base_district_id=None, voting_province_id=None,
                 voting_district_id=None, dependents_min=None, created_by=None, created_from=None, created_to=None, updated_from=None,
                 updated_to=None, sort="rank", order="desc") -> Select:
-    stmt = select(Soldier).where(Soldier.deleted_at.is_(None))
+    stmt = select(Soldier).where(Soldier.deleted_at.is_(None), not_separated())
     scope = scope_unit_ids(db, user)
     if scope is not None:
         stmt = stmt.where(Soldier.current_unit_id.in_(scope))
     if q:
-        like = f"%{q}%"
-        stmt = stmt.where(or_(Soldier.name_kh.ilike(like), Soldier.name_latin.ilike(like),
-                              Soldier.military_id.ilike(like), Soldier.national_id.ilike(like),
-                              Soldier.phone.ilike(like)))
+        stmt = stmt.where(search_clause(db, q))
     if military_ids:
         # a pasted list of military IDs (one per line, or separated by commas/spaces)
-        ids = [x for x in re.split(r"[\s,;]+", military_ids) if x]
+        ids = [format_military_id(x) for x in re.split(r"[\s,;]+", military_ids) if x]
         stmt = stmt.where(Soldier.military_id.in_(ids[:2000]))
     if rank_id:
         stmt = stmt.where(Soldier.current_rank_id == rank_id)
@@ -202,15 +220,13 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
         stmt = stmt.where(MISSING["attachments"] if has_attachments == "no" else ~MISSING["attachments"])
     if retire_within or promotion_due:
         # local import: reports imports a lot
-        from app.api.v1.reports import promotion_due as due_for_promotion
-        from app.api.v1.reports import retiring_by
+        from app.api.v1.reports import promotion_clause, retiring_clause
 
+        # SQL conditions on serving soldiers (no list of ids built in Python)
         if retire_within:  # ជិតនិវត្ត ក្នុង N ឆ្នាំ (serving soldiers; those already past the age are included)
-            horizon = years_ago(-retire_within)
-            ids = [s.id for s, _ in retiring_by(db, serving(select(Soldier)), horizon)]
-            stmt = stmt.where(Soldier.id.in_(ids))
+            stmt = stmt.where(serving_clause(), retiring_clause(db, years_ago(-retire_within)))
         if promotion_due:  # គ្រប់ឆ្នាំឡើងស័ក្តិ
-            stmt = stmt.where(Soldier.id.in_([s.id for s in due_for_promotion(db, user)]))
+            stmt = stmt.where(serving_clause(), promotion_clause(db))
     if created_by:
         stmt = stmt.where(Soldier.created_by == created_by)
     if created_from:
@@ -221,9 +237,8 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
         stmt = stmt.where(Soldier.updated_at >= updated_from)
     if updated_to:
         stmt = stmt.where(Soldier.updated_at < updated_to + timedelta(days=1))
-    if sort == "rank":
-        stmt = stmt.outerjoin(Rank, Rank.id == Soldier.current_rank_id)
-        col = Rank.sort_order
+    if sort == "rank":  # rank_sort mirrors Rank.sort_order and is indexed with name_kh (no join, no sort of every row)
+        col = Soldier.rank_sort
         stmt = stmt.order_by(col.desc() if order == "desc" else col.asc(), Soldier.name_kh)
     else:
         col = SORTS.get(sort, Soldier.id)
@@ -268,6 +283,14 @@ def get_soldier(db: Session, user: User, soldier_id: int) -> Soldier:
     return s
 
 
+def get_editable_soldier(db: Session, user: User, soldier_id: int) -> Soldier:
+    """A soldier whose profile may still change: a separated soldier's record is kept as it was."""
+    s = get_soldier(db, user, soldier_id)
+    if is_separated(db, s):
+        raise HTTPException(400, "យោធិននេះបានចេញពីជួរ — ប្រវត្តិរូបត្រូវបានរក្សាទុកសម្រាប់មើលតែប៉ុណ្ណោះ")
+    return s
+
+
 def soldier_detail(s: Soldier) -> dict:
     data = to_dict(s)
     data.update(soldier_summary(s))
@@ -296,8 +319,12 @@ def _xlsx(buf, name: str) -> StreamingResponse:
 def export_soldiers(f: dict = Depends(_filters), db: Session = Depends(get_db),
                     user: User = Depends(require("soldiers", "export"))):
     """Same columns as the import template (so it can be imported or compared again), plus computed ones."""
-    rows = db.scalars(build_query(db, user, **f)).unique().all()
-    return _xlsx(soldier_io.export(db, rows, soldier_summary), "soldiers.xlsx")
+    stmt = build_query(db, user, **f)
+    total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    if total > soldier_io.MAX_EXPORT_ROWS:
+        raise HTTPException(400, f"ទិន្នន័យច្រើនពេកសម្រាប់ Excel ({total:,} ជួរ; អតិបរមា {soldier_io.MAX_EXPORT_ROWS:,})"
+                                 " — សូមចម្រាញ់តាមអង្គភាព ឬលក្ខខណ្ឌផ្សេងទៀត")
+    return _xlsx(soldier_io.export(db, in_batches(db, stmt), soldier_summary), "soldiers.xlsx")
 
 
 # ---------------- Excel import (ការងារបញ្ចូលក្របខ័ណ្ឌយោធិនអាជីព) & comparison (ការប្រៀបធៀប) ----------------
@@ -382,10 +409,13 @@ def compare_soldiers(file: UploadFile = File(...), fields: str | None = Form(Non
 
 @router.get("/{soldier_id}")
 def get_one(soldier_id: int, db: Session = Depends(get_db), user: User = Depends(require("soldiers", "view"))):
-    return soldier_detail(get_soldier(db, user, soldier_id))
+    s = get_soldier(db, user, soldier_id)
+    return {**soldier_detail(s), "separated": is_separated(db, s)}
 
 
 def _apply(s: Soldier, data: SoldierIn) -> None:
+    if err := dates_error(data.date_of_birth, data.enlistment_date):
+        raise HTTPException(400, err)
     payload = data.model_dump(exclude={"educations", "languages", "children"})
     for k, v in payload.items():
         setattr(s, k, v)
@@ -452,7 +482,7 @@ def create_soldier(payload: SoldierIn, request: Request, db: Session = Depends(g
 @router.put("/{soldier_id}")
 def update_soldier(soldier_id: int, payload: SoldierIn, request: Request, db: Session = Depends(get_db),
                    user: User = Depends(require("soldiers", "update"))):
-    s = get_soldier(db, user, soldier_id)
+    s = get_editable_soldier(db, user, soldier_id)
     if payload.current_unit_id and payload.current_unit_id != s.current_unit_id:
         check_unit_in_scope(db, user, payload.current_unit_id)
     before = to_dict(s)
@@ -474,7 +504,7 @@ def update_soldier(soldier_id: int, payload: SoldierIn, request: Request, db: Se
 @router.delete("/{soldier_id}")
 def delete_soldier(soldier_id: int, request: Request, db: Session = Depends(get_db),
                    user: User = Depends(require("soldiers", "delete"))):
-    s = get_soldier(db, user, soldier_id)
+    s = get_editable_soldier(db, user, soldier_id)
     s.deleted_at = datetime.now()
     audit(db, user, "delete", table="soldiers", record_id=s.id, before=to_dict(s), request=request)
     db.commit()
@@ -486,7 +516,7 @@ def delete_soldier(soldier_id: int, request: Request, db: Session = Depends(get_
 @router.post("/{soldier_id}/photo")
 def upload_photo(soldier_id: int, request: Request, file: UploadFile = File(...), db: Session = Depends(get_db),
                  user: User = Depends(require("soldiers", "update"))):
-    s = get_soldier(db, user, soldier_id)
+    s = get_editable_soldier(db, user, soldier_id)
     path, _ = save_upload(file, "photos", images_only=True)
     delete_storage_file(s.photo_path)
     s.photo_path = path
@@ -517,7 +547,7 @@ def list_attachments(soldier_id: int, db: Session = Depends(get_db), user: User 
 def add_attachment(soldier_id: int, request: Request, file: UploadFile = File(...),
                    description: str | None = Form(None), db: Session = Depends(get_db),
                    user: User = Depends(require("soldiers", "update"))):
-    get_soldier(db, user, soldier_id)
+    get_editable_soldier(db, user, soldier_id)
     path, size = save_upload(file, "soldiers")
     a = SoldierAttachment(soldier_id=soldier_id, file_path=path, file_name=file.filename or "file",
                           file_size=size, description=description, uploaded_by=user.id)
@@ -541,7 +571,7 @@ def download_attachment(soldier_id: int, att_id: int, db: Session = Depends(get_
 @router.delete("/{soldier_id}/attachments/{att_id}")
 def delete_attachment(soldier_id: int, att_id: int, request: Request, db: Session = Depends(get_db),
                       user: User = Depends(require("soldiers", "update"))):
-    get_soldier(db, user, soldier_id)
+    get_editable_soldier(db, user, soldier_id)
     a = db.get(SoldierAttachment, att_id)
     if not a or a.soldier_id != soldier_id:
         raise HTTPException(404, "រកមិនឃើញ")
@@ -582,6 +612,7 @@ def soldier_profile(soldier_id: int, db: Session = Depends(get_db), user: User =
     lk = names_by_id(db, Lookup, {s.blood_type_id, s.education_level_id, s.marital_status_id, s.spouse_job_id}
                 | {e.education_level_id for e in s.educations} | {lg.language_id for lg in s.languages})
     d.update({
+        "separated": is_separated(db, s),
         "blood_type_name": lk.get(s.blood_type_id),
         "education_level_name": lk.get(s.education_level_id),
         "marital_status_name": lk.get(s.marital_status_id),

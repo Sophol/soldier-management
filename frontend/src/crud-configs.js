@@ -19,7 +19,8 @@ const soldierCols = [
 const soldierField = { key: 'soldier_id', label: 'យោធិន', type: 'soldier', required: true }
 const options = (obj) => Object.entries(obj).map(([value, label]) => ({ value, label }))
 const RETIREMENT_TYPES = options({ pension: 'សោធននិវត្តន៍ (គ្រប់អាយុ)', voluntary: 'ស្ម័គ្រចិត្តចូលនិវត្តន៍',
-  disability: 'ពិការ', death: 'ស្លាប់', category2: 'យោធិនប្រភេទ២' })
+  disability: 'ពិការ', death: 'ស្លាប់' })
+const CATEGORY2_TYPES = options({ fallen: 'ពលី', fallen_dead: 'ពលី-មរណ', disabled: 'ពិការ' })
 const CASE_STATUS = options({ submitted: 'ដាក់ឯកសារ', processing: 'កំពុងដំណើរការ', done: 'រួចរាល់' })
 const DISCIPLINE_STATUS = options({ active: 'កំពុងអនុវត្ត', expired: 'ផុតកំណត់', cancelled: 'លុបចោល' })
 const CARD_STATUS = options({ issued: 'ចេញរួច', pending: 'មិនទាន់ចេញ', expired: 'ផុតកំណត់', lost: 'បាត់', replaced: 'ជំនួស' })
@@ -163,7 +164,7 @@ export const configs = {
       { key: 'reason', label: 'ខ្លឹមសារ/មូលហេតុ', type: 'textarea' }],
   },
   retirement: {
-    title: 'សោធននិវត្តន៍ និងយោធិនប្រភេទ២', endpoint: '/retirements', auditFilters: true, module: 'retirement', attachments: 'retirement', formWidth: '720px',
+    title: 'ការងារសោធននិវត្តន៍', endpoint: '/retirements', auditFilters: true, module: 'retirement', attachments: 'retirement', formWidth: '720px',
     columns: [...soldierCols,
       { key: 'type_name', label: 'ប្រភេទ', width: 140 },
       { key: 'decision_no', label: 'លេខលិខិត', width: 110 },
@@ -205,9 +206,26 @@ export const configs = {
     // an expired card is stored as issued (expired is computed from the date)
     beforeSave: (p) => { if (p.status === 'expired') p.status = 'issued' },
   },
+  // យោធិនប្រភេទ២: still in the soldier list, but no longer counted among the serving soldiers
+  category2: {
+    title: 'យោធិនប្រភេទ២', endpoint: '/category2', auditFilters: true, module: 'category2', attachments: 'category2', formWidth: '720px',
+    columns: [...soldierCols.map((c) => (c.key === 'soldier_name' ? { ...c, link: (r) => `/soldiers/${r.soldier_id}` } : c)),
+      { key: 'type_name', label: 'ប្រភេទ', width: 120, tag: (r) => ({ fallen: 'warning', fallen_dead: 'danger', disabled: 'info' })[r.type] },
+      { key: 'decision_no', label: 'លេខលិខិត', width: 110 },
+      { key: 'effective_date', label: 'ចូលជាធរមាន', type: 'date', width: 120 }],
+    filters: [{ key: 'type', label: 'ប្រភេទ', type: 'select', width: '130px', options: CATEGORY2_TYPES },
+      { key: 'year', label: 'ឆ្នាំ', type: 'year', width: '120px' }, ...dateRange],
+    fields: [soldierField,
+      { key: 'type', label: 'ប្រភេទ', type: 'select', required: true, span: 12, options: CATEGORY2_TYPES },
+      { key: 'effective_date', label: 'ថ្ងៃចូលជាធរមាន', type: 'date', required: true, span: 12 },
+      { key: 'decision_no', label: 'លេខលិខិត', span: 12 },
+      { key: 'decision_date', label: 'ថ្ងៃខែឆ្នាំលិខិត', type: 'date', span: 12 },
+      { key: 'notes', label: 'កំណត់សម្គាល់', type: 'textarea' }],
+  },
   separation: {
     title: 'យោធិនចេញពីជួរ', endpoint: '/separations', auditFilters: true, module: 'separation', attachments: 'separation', formWidth: '720px',
-    columns: [...soldierCols,
+    // separated soldiers are no longer in the soldier list: their profile and history open from here
+    columns: [...soldierCols.map((c) => (c.key === 'soldier_name' ? { ...c, link: (r) => `/soldiers/${r.soldier_id}` } : c)),
       { key: 'reason_name', label: 'មូលហេតុ', width: 150 },
       { key: 'decision_no', label: 'លេខលិខិត', width: 110 },
       { key: 'effective_date', label: 'ចូលជាធរមាន', type: 'date', width: 120 }],

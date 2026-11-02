@@ -20,7 +20,8 @@ MODULES: dict[str, str] = {
     "discipline": "ការងារវិន័យ និងទណ្ឌកម្ម",
     "awards": "ការងារសរសើរ និងគ្រឿងឥស្សរិយយស",
     "id_cards": "ការងារអត្តសញ្ញាណប័ណ្ណយោធិន",
-    "retirement": "សោធននិវត្តន៍ និងយោធិនប្រភេទ២",
+    "retirement": "ការងារសោធននិវត្តន៍",
+    "category2": "យោធិនប្រភេទ២",
     "separation": "យោធិនចេញពីជួរ",
     "reports": "របាយការណ៍",
     # approval workflow (New.txt §12): each level is its own permission (action "approve" only)

@@ -31,6 +31,7 @@ export const menu = [
     key: 'soldiers', icon: 'User', children: [
       { key: 'soldierList', to: '/soldiers', perm: 'soldiers.view' },
       { key: 'unitTransfers', to: '/strength', perm: 'strength.view' },
+      { key: 'category2', to: '/category2', perm: 'category2.view' },
       { key: 'compare', to: '/soldiers/compare', perm: 'soldiers.view' },
     ],
   },

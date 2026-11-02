@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
@@ -39,7 +39,27 @@ const rules = {
   military_id: [{ required: true, message: 'សូមបញ្ចូលអត្តលេខ' }],
   name_kh: [{ required: true, message: 'សូមបញ្ចូលគោត្តនាមនិងនាម' }],
   gender: [{ required: true, message: 'សូមជ្រើសរើសភេទ' }],
+  // a soldier must be born before enlisting (a typo in either year shows up here); ISO strings compare as dates
+  date_of_birth: [{ validator: checkBirthBeforeEnlistment, trigger: 'change' }],
+  enlistment_date: [{ validator: checkBirthBeforeEnlistment, trigger: 'change' }],
 }
+
+// អត្តលេខ has 6 digits: 652 -> 000652 (the server pads it the same way)
+function padMilitaryId() {
+  const v = (form.value.military_id || '').trim()
+  if (/^[0-9]+$/.test(v)) form.value.military_id = v.padStart(6, '0')
+}
+
+function checkBirthBeforeEnlistment(_rule, _value, callback) {
+  const { date_of_birth: dob, enlistment_date: enlisted } = form.value
+  if (dob && enlisted && dob >= enlisted) callback(new Error('ថ្ងៃខែឆ្នាំកំណើត ត្រូវតែមុនថ្ងៃខែឆ្នាំបម្រើចូលទ័ព'))
+  else callback()
+}
+
+// changing one date re-checks the other, so a fixed pair clears both messages
+watch(() => [form.value.date_of_birth, form.value.enlistment_date], () => {
+  formRef.value?.validateField(['date_of_birth', 'enlistment_date']).catch(() => {})
+})
 
 const married = computed(() => {
   const status = lookups.list('marital_status').find((m) => m.id === form.value.marital_status_id)
@@ -136,13 +156,13 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
                 </el-upload>
               </div>
               <el-row :gutter="14" class="grow">
-                <el-col :md="8"><el-form-item label="អត្តលេខ" prop="military_id"><el-input v-model="form.military_id" /></el-form-item></el-col>
+                <el-col :md="8"><el-form-item label="អត្តលេខ" prop="military_id"><el-input v-model="form.military_id" placeholder="៦ ខ្ទង់ ឧ. 000652" @blur="padMilitaryId" /></el-form-item></el-col>
                 <el-col :md="8"><el-form-item label="គោត្តនាមនិងនាម" prop="name_kh"><el-input v-model="form.name_kh" /></el-form-item></el-col>
                 <el-col :md="8"><el-form-item label="ឈ្មោះជាអក្សរឡាតាំង"><el-input v-model="form.name_latin" @input="(v) => (form.name_latin = v.toUpperCase())" /></el-form-item></el-col>
                 <el-col :md="4"><el-form-item label="ភេទ" prop="gender">
                   <el-radio-group v-model="form.gender"><el-radio value="M">ប្រុស</el-radio><el-radio value="F">ស្រី</el-radio></el-radio-group>
                 </el-form-item></el-col>
-                <el-col :md="5"><el-form-item label="ថ្ងៃខែឆ្នាំកំណើត"><el-date-picker v-model="form.date_of_birth" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
+                <el-col :md="5"><el-form-item label="ថ្ងៃខែឆ្នាំកំណើត" prop="date_of_birth"><el-date-picker v-model="form.date_of_birth" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
                 <el-col :md="5"><el-form-item label="លេខអត្តសញ្ញាណប័ណ្ណសញ្ជាតិខ្មែរ"><el-input v-model="form.national_id" /></el-form-item></el-col>
                 <el-col :md="5"><el-form-item label="ថ្ងៃផុតកំណត់អត្តសញ្ញាណប័ណ្ណ"><el-date-picker v-model="form.national_id_expiry" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
                 <el-col :md="5"><el-form-item label="លេខទូរសព្ទ"><el-input v-model="form.phone" /></el-form-item></el-col>
@@ -181,7 +201,7 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
               <el-col :md="12"><el-form-item label="អង្គភាព / ស្ថាប័នកងឯកភាព"><UnitTreeSelect v-model="form.current_unit_id" /></el-form-item></el-col>
               <el-col :md="4"><el-form-item label="ថ្ងៃផ្លាស់ប្ដូរកងឯកភាព"><el-date-picker v-model="form.unit_transfer_date" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
               <el-col :md="8"><el-form-item label="មកពីស្ថាប័នកងឯកភាព"><el-input v-model="form.from_unit_text" /></el-form-item></el-col>
-              <el-col :md="6"><el-form-item label="ថ្ងៃខែឆ្នាំបម្រើចូលទ័ព"><el-date-picker v-model="form.enlistment_date" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
+              <el-col :md="6"><el-form-item label="ថ្ងៃខែឆ្នាំបម្រើចូលទ័ព" prop="enlistment_date"><el-date-picker v-model="form.enlistment_date" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item></el-col>
               <el-col :md="6"><el-form-item label="បញ្ចូលក្របខ័ណ្ឌលេខ"><el-input v-model="form.establishment_no" /></el-form-item></el-col>
               <el-col :md="6"><el-form-item label="ប្រភេទសេវា (សម្រាប់ឆ្នាំឡើងស័ក្តិ)">
                 <el-radio-group v-model="form.service_track"><el-radio value="admin">សេវារដ្ឋបាល</el-radio><el-radio value="combat">ប្រតិបត្តិការសឹក</el-radio></el-radio-group>

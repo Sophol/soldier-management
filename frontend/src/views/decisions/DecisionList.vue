@@ -27,7 +27,7 @@ const loading = ref(false)
 const blank = {
   q: '', status: null, date_from: null, date_to: null, effective_from: null, effective_to: null, waiting: false, overdue: false,
   old_rank_id: null, new_rank_id: null, old_position_id: null, new_position_id: null, old_unit_id: null, new_unit_id: null,
-  created_by: null, created_from: null, created_to: null,
+  institution_id: null, created_by: null, created_from: null, created_to: null,
 }
 const q = reactive({ page: 1, size: 20, ...blank })
 // filters can come from the URL (dashboard links, bookmarks)
@@ -35,7 +35,10 @@ for (const [k, v] of Object.entries(route.query)) {
   if (!(k in blank) || v === '') continue
   q[k] = typeof blank[k] === 'boolean' ? v === 'true' : /^\d+$/.test(v) && k.endsWith('_id') || k === 'created_by' ? Number(v) : v
 }
-const showMore = ref(Object.keys(route.query).some((k) => !['q', 'status', 'waiting'].includes(k) && k in blank))
+const showMore = ref(Object.keys(route.query).some((k) => !['q', 'status', 'waiting', 'institution_id'].includes(k) && k in blank))
+// ស្ថាប័នកងឯកភាព = the top-level units; a unit belongs to the one at the start of its path ("/3/12/")
+const institutions = computed(() => lookups.unitTree.filter((u) => u.level === 1))
+const institutionOf = (unitId) => Number(lookups.unitMap[unitId]?.path?.split('/')[1]) || null
 const users = ref([])
 const exporting = ref(false)
 const range = (from, to) => computed({
@@ -90,7 +93,18 @@ async function load() {
 }
 
 function emptyItem() {
-  return { soldier_id: null, soldier: null, new_rank_id: null, new_position_id: null, new_unit_id: null, note: '' }
+  return { soldier_id: null, soldier: null, new_rank_id: null, new_position_id: null, new_institution_id: null, new_unit_id: null, note: '' }
+}
+
+// choosing a ស្ថាប័នកងឯកភាព moves the soldier to it, unless the chosen unit is already inside it
+function setInstitution(row, id) {
+  row.new_institution_id = id
+  if (!id) row.new_unit_id = null
+  else if (institutionOf(row.new_unit_id) !== id) row.new_unit_id = id
+}
+function setUnit(row, id) {
+  row.new_unit_id = id
+  if (id) row.new_institution_id = institutionOf(id)
 }
 
 function openCreate() {
@@ -112,11 +126,11 @@ async function openEdit(row) {
     items: data.items.map((i) => ({
       soldier_id: i.soldier_id,
       soldier: {
-        rank_name: i.old_rank, position_name: i.old_position, unit_name: i.old_unit,
+        rank_name: i.old_rank, position_name: i.old_position, unit_name: i.old_unit, institution_name: i.old_institution,
         rank_sort: lookups.list('ranks').find((r) => r.id === i.old_rank_id)?.sort_order, // keeps the "higher rank only" filter
       },
       label: `${i.old_rank || ''} ${i.name_kh} (${i.military_id})`, new_rank_id: i.new_rank_id,
-      new_position_id: i.new_position_id, new_unit_id: i.new_unit_id, note: i.note,
+      new_position_id: i.new_position_id, new_institution_id: institutionOf(i.new_unit_id), new_unit_id: i.new_unit_id, note: i.note,
     })),
   }
   warnings.value = []
@@ -150,6 +164,26 @@ async function save() {
   }
 }
 
+// ព័ត៌មានខុសប្រក្រតី: re-checked on the server while the form is typed (warnings never block saving)
+let checkTimer = null
+let checkSeq = 0
+watch(() => dialog.value && [form.value.decision_date, form.value.effective_date,
+  form.value.items?.map((i) => [i.soldier_id, i.new_rank_id, i.new_position_id, i.new_unit_id])], (on) => {
+  clearTimeout(checkTimer)
+  if (!on) return
+  checkTimer = setTimeout(async () => {
+    const seq = ++checkSeq
+    const items = form.value.items.filter((i) => i.soldier_id)
+      .map(({ soldier_id, new_rank_id, new_position_id, new_unit_id }) => ({ soldier_id, new_rank_id, new_position_id, new_unit_id }))
+    try {
+      const { data } = await http.post('/decisions/check', {
+        id: form.value.id, kind: kind.value, decision_date: form.value.decision_date, effective_date: form.value.effective_date, items,
+      }, { silent: true })
+      if (seq === checkSeq) warnings.value = data.warnings
+    } catch { /* a failed check only means no warnings are shown; saving still validates */ }
+  }, 400)
+}, { deep: true })
+
 async function showDetail(row) {
   detail.value = (await http.get(`/decisions/${row.id}`)).data
 }
@@ -170,15 +204,17 @@ const EXPORT_COLUMNS = [
   { label: 'ថ្ងៃខែឆ្នាំ', text: (r) => fmtDate(r.decision_date) },
   { label: 'ចូលជាធរមាន', text: (r) => fmtDate(r.effective_date) },
   { label: 'ចំនួនយោធិន', text: (r) => r.item_count },
+  { label: 'ស្ថាប័នកងឯកភាព', text: (r) => r.institutions.join(', ') },
   { label: 'ចេញដោយ', text: (r) => r.issued_by },
   { label: 'អ្នកដាក់សំណើ', text: (r) => r.created_by_name },
   { label: 'ស្ថានភាព', text: (r) => STATUS_TEXT[r.status] + (r.overdue ? ' (យឺតយ៉ាវ)' : '') },
+  { label: 'ព័ត៌មានខុសប្រក្រតី', text: (r) => r.anomalies.join('\n') },
   { label: 'កំណត់សម្គាល់', text: (r) => r.notes },
 ]
 function filterText() {
   const name = (key, id) => lookups.name(key, id)
   return filterSummary([
-    ['ពាក្យគន្លឹះ', q.q], ['ស្ថានភាព', STATUS_TEXT[q.status]], ['រង់ចាំខ្ញុំ', q.waiting ? 'បាទ' : ''], ['យឺតយ៉ាវ', q.overdue ? 'បាទ' : ''],
+    ['ពាក្យគន្លឹះ', q.q], ['ស្ថាប័នកងឯកភាព', lookups.unitMap[q.institution_id]?.name_kh], ['ស្ថានភាព', STATUS_TEXT[q.status]], ['រង់ចាំខ្ញុំ', q.waiting ? 'បាទ' : ''], ['យឺតយ៉ាវ', q.overdue ? 'បាទ' : ''],
     ['ថ្ងៃសម្រេច', q.date_from || q.date_to ? `${fmtDate(q.date_from)} → ${fmtDate(q.date_to)}` : ''],
     ['ចូលជាធរមាន', q.effective_from || q.effective_to ? `${fmtDate(q.effective_from)} → ${fmtDate(q.effective_to)}` : ''],
     ['ស័ក្តិចាស់', name('ranks', q.old_rank_id)], ['ស័ក្តិថ្មី', name('ranks', q.new_rank_id)],
@@ -278,6 +314,11 @@ onMounted(load)
     <el-card shadow="never" class="filter-card">
       <el-form inline @submit.prevent="search">
         <el-form-item><el-input v-model="q.q" placeholder="លេខ / ឈ្មោះ / អត្តលេខ" clearable prefix-icon="Search" /></el-form-item>
+        <el-form-item label="ស្ថាប័នកងឯកភាព">
+          <el-select v-model="q.institution_id" clearable filterable style="width: 220px" @change="search">
+            <el-option v-for="u in institutions" :key="u.id" :value="u.id" :label="u.name_kh" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="ស្ថានភាព / ជំហានអនុម័ត">
           <el-select v-model="q.status" clearable style="width: 240px">
             <el-option v-for="(t, k) in STATUS_TEXT" :key="k" :value="k" :label="t" />
@@ -341,6 +382,7 @@ onMounted(load)
         <el-table-column label="ថ្ងៃខែឆ្នាំ" width="120"><template #default="{ row }">{{ fmtDate(row.decision_date) }}</template></el-table-column>
         <el-table-column label="ចូលជាធរមាន" width="120"><template #default="{ row }">{{ fmtDate(row.effective_date) }}</template></el-table-column>
         <el-table-column label="ចំនួនយោធិន" width="110" align="center"><template #default="{ row }">{{ num(row.item_count) }}</template></el-table-column>
+        <el-table-column label="ស្ថាប័នកងឯកភាព" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.institutions.join(', ') }}</template></el-table-column>
         <el-table-column prop="issued_by" label="ចេញដោយ" min-width="140" />
         <el-table-column prop="created_by_name" label="អ្នកដាក់សំណើ" min-width="130" />
         <el-table-column prop="notes" label="កំណត់សម្គាល់" min-width="160" show-overflow-tooltip />
@@ -348,6 +390,10 @@ onMounted(load)
           <template #default="{ row }">
             <el-tag :type="STATUS_TAG[row.status]" size="small">{{ STATUS_TEXT[row.status] }}</el-tag>
             <el-tag v-if="row.overdue" type="danger" size="small" effect="dark" class="overdue">យឺតយ៉ាវ</el-tag>
+            <el-tooltip v-if="row.anomalies.length" placement="top">
+              <template #content><div v-for="a in row.anomalies" :key="a">{{ a }}</div></template>
+              <el-tag type="warning" size="small" class="overdue">ខុសប្រក្រតី {{ num(row.anomalies.length) }}</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="សកម្មភាព" width="300" fixed="right" align="center">
@@ -377,6 +423,7 @@ onMounted(load)
             <DocumentSelect v-model="form.incoming_document_id" :initial-label="form.incoming_label" />
           </el-form-item></el-col>
         </el-row>
+        <div v-if="warnings.length" class="section-title">ព័ត៌មានខុសប្រក្រតី ({{ num(warnings.length) }})</div>
         <el-alert v-for="w in warnings" :key="w" :title="w" type="warning" show-icon :closable="false" style="margin-bottom: 6px" />
         <el-table :data="form.items" border size="small">
           <el-table-column label="យោធិន" min-width="260">
@@ -389,6 +436,7 @@ onMounted(load)
               <div v-if="row.soldier" class="small">
                 <div>{{ row.soldier.rank_name }}</div>
                 <div class="muted">{{ row.soldier.position_name }} · {{ row.soldier.unit_name }}</div>
+                <div v-if="row.soldier.institution_name" class="muted">{{ row.soldier.institution_name }}</div>
               </div>
             </template>
           </el-table-column>
@@ -406,8 +454,15 @@ onMounted(load)
               </el-select>
             </template>
           </el-table-column>
+          <el-table-column v-if="showUnit" label="ស្ថាប័នកងឯកភាពថ្មី" width="190">
+            <template #default="{ row }">
+              <el-select :model-value="row.new_institution_id" clearable filterable @update:model-value="(v) => setInstitution(row, v ?? null)">
+                <el-option v-for="u in institutions" :key="u.id" :value="u.id" :label="u.name_kh" />
+              </el-select>
+            </template>
+          </el-table-column>
           <el-table-column v-if="showUnit" label="អង្គភាពថ្មី" width="220">
-            <template #default="{ row }"><UnitTreeSelect v-model="row.new_unit_id" /></template>
+            <template #default="{ row }"><UnitTreeSelect :model-value="row.new_unit_id" :root-id="row.new_institution_id" @update:model-value="(v) => setUnit(row, v)" /></template>
           </el-table-column>
           <el-table-column label="កំណត់សម្គាល់" width="150"><template #default="{ row }"><el-input v-model="row.note" /></template></el-table-column>
           <el-table-column width="50"><template #default="{ $index }"><el-button link type="danger" icon="Delete" @click="form.items.splice($index, 1)" /></template></el-table-column>
@@ -439,12 +494,20 @@ onMounted(load)
                   finish-status="success" align-center class="wf-steps">
           <el-step v-for="w in WORKFLOW" :key="w.status" :title="w.step" />
         </el-steps>
+        <template v-if="detail.anomalies.length">
+          <div class="section-title">ព័ត៌មានខុសប្រក្រតី ({{ num(detail.anomalies.length) }})</div>
+          <el-alert v-for="a in detail.anomalies" :key="a" :title="a" type="warning" show-icon :closable="false" style="margin-bottom: 6px" />
+        </template>
         <el-table :data="detail.items" border size="small" style="margin-top: 14px">
           <el-table-column type="index" label="ល.រ" width="55" />
           <el-table-column prop="military_id" label="អត្តលេខ" width="100" />
           <el-table-column prop="name_kh" label="គោត្តនាមនិងនាម" min-width="140" />
           <el-table-column v-if="detail.kind !== 'appoint'" label="ឋានន្តរស័ក្តិ" min-width="200"><template #default="{ row }"><span v-if="row.new_rank_id">{{ row.old_rank }} → <b>{{ row.new_rank }}</b></span></template></el-table-column>
           <el-table-column v-if="detail.kind !== 'promote'" label="មុខតំណែង" min-width="200"><template #default="{ row }"><span v-if="row.new_position_id">{{ row.old_position || '-' }} → <b>{{ row.new_position }}</b></span></template></el-table-column>
+          <el-table-column label="ស្ថាប័នកងឯកភាព" min-width="180"><template #default="{ row }">
+            <span v-if="row.new_unit_id && row.new_institution !== row.old_institution">{{ row.old_institution || '-' }} → <b>{{ row.new_institution }}</b></span>
+            <span v-else>{{ row.old_institution }}</span>
+          </template></el-table-column>
           <el-table-column v-if="detail.kind !== 'promote'" label="អង្គភាព" min-width="200"><template #default="{ row }"><span v-if="row.new_unit_id">{{ row.old_unit || '-' }} → <b>{{ row.new_unit }}</b></span></template></el-table-column>
           <el-table-column prop="note" label="កំណត់សម្គាល់" />
         </el-table>

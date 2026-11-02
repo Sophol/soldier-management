@@ -7,9 +7,11 @@ import { useAuth } from '@/stores/auth'
 import { useLookups } from '@/stores/lookups'
 import SavedFilters from '@/components/SavedFilters.vue'
 import UnitTreeSelect from '@/components/UnitTreeSelect.vue'
+import { useTableHeight } from '@/composables/useTableHeight'
 import { fmtDate, genderText, num } from '@/utils/format'
 import { fetchAll, filterSummary, printList } from '@/utils/listExport'
 
+const tableHeight = useTableHeight()
 const auth = useAuth()
 const lookups = useLookups()
 const router = useRouter()
@@ -510,7 +512,7 @@ onMounted(async () => {
     </el-card>
 
     <el-card shadow="never">
-      <el-table v-loading="loading" :data="rows" stripe border empty-text="គ្មានទិន្នន័យ" @sort-change="onSort"
+      <el-table v-loading="loading" :data="rows" stripe border empty-text="គ្មានទិន្នន័យ" :max-height="tableHeight" @sort-change="onSort"
                 @row-dblclick="(r) => router.push(`/soldiers/${r.id}`)">
         <el-table-column type="index" label="ល.រ" width="60" :index="(i) => num((paging.page - 1) * paging.size + i + 1)" />
         <el-table-column prop="military_id" label="អត្តលេខ" width="110" sortable="custom" />

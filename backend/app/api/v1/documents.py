@@ -24,6 +24,7 @@ FILE_OWNERS = {
     "discipline": "discipline",
     "award": "awards",
     "retirement": "retirement",
+    "category2": "category2",
     "separation": "separation",
     "id_card": "id_cards",
     "conscript": "conscripts",  # scanned record (ស្កេនប្រវត្តិរូប), exemption papers

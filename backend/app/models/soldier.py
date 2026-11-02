@@ -1,9 +1,10 @@
 from datetime import date
 
-from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Integer, SmallInteger, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Index, Integer, SmallInteger, String, Text, event, update
+from sqlalchemy.orm import Mapped, Session, attributes, mapped_column, relationship
 
 from app.core.database import AuditMixin, Base, SoftDeleteMixin, TimestampMixin
+from app.models.org import Rank
 
 
 class Soldier(AuditMixin, SoftDeleteMixin, Base):
@@ -35,6 +36,8 @@ class Soldier(AuditMixin, SoftDeleteMixin, Base):
 
     # current service state (cache of the latest history row)
     current_rank_id: Mapped[int | None] = mapped_column(ForeignKey("ranks.id"), index=True)
+    # copy of the current rank's sort_order (kept by _sync_rank_sort) so the default list order uses an index
+    rank_sort: Mapped[int | None] = mapped_column(Integer)
     rank_date: Mapped[date | None] = mapped_column(Date)
     current_position_id: Mapped[int | None] = mapped_column(ForeignKey("positions.id"), index=True)
     position_date: Mapped[date | None] = mapped_column(Date)
@@ -68,6 +71,24 @@ class Soldier(AuditMixin, SoftDeleteMixin, Base):
     educations: Mapped[list["SoldierEducation"]] = relationship(cascade="all, delete-orphan", order_by="SoldierEducation.start_date")
     languages: Mapped[list["SoldierLanguage"]] = relationship(cascade="all, delete-orphan")
     children: Mapped[list["SoldierChild"]] = relationship(cascade="all, delete-orphan")
+
+
+# the soldier list's default order (highest rank first, then name) and its reverse, read straight from an index
+Index("ix_soldiers_rank_sort_desc", Soldier.rank_sort.desc(), Soldier.name_kh)
+Index("ix_soldiers_rank_sort_asc", Soldier.rank_sort, Soldier.name_kh)
+
+
+@event.listens_for(Session, "before_flush")
+def _sync_rank_sort(session: Session, _flush_context, _instances) -> None:
+    """Keep Soldier.rank_sort equal to the sort_order of the soldier's current rank, whichever way either changes."""
+    with session.no_autoflush:
+        for obj in [*session.new, *session.dirty]:
+            if isinstance(obj, Soldier) and (obj in session.new or attributes.get_history(obj, "current_rank_id").has_changes()):
+                rank = session.get(Rank, obj.current_rank_id) if obj.current_rank_id else None
+                obj.rank_sort = rank.sort_order if rank else None
+            elif isinstance(obj, Rank) and obj not in session.new and attributes.get_history(obj, "sort_order").has_changes():
+                session.execute(update(Soldier).where(Soldier.current_rank_id == obj.id).values(rank_sort=obj.sort_order)
+                                .execution_options(synchronize_session=False))
 
 
 class SoldierEducation(TimestampMixin, Base):

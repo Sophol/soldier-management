@@ -88,6 +88,20 @@ SPECIALTY_SECTION = {
     "ព័ត៌មានវិទ្យា": "technical", "ទូរគមនាគមន៍": "technical", "វិស្វកម្ម": "technical",
     "បើកបរ និងជួសជុលយានយន្ត": "technical", "ថ្មើរជើង": "operations", "ការពារ និងអន្តរាគមន៍": "operations",
     "ចារកម្ម និងស៊ើបការណ៍": "operations", "វេជ្ជសាស្ត្រ": "health",
+    "គណនេយ្យ": "admin", "ធនធានមនុស្ស": "admin", "បណ្ណសារ និងឯកសារ": "admin", "លទ្ធកម្ម": "admin",
+    "ទំនាក់ទំនងអន្តរជាតិ": "admin", "បកប្រែ": "admin",
+    "អគ្គិសនី និងអេឡិចត្រូនិក": "technical", "សន្តិសុខព័ត៌មានវិទ្យា": "technical", "សំណង់": "technical",
+    "ជួសជុលអាវុធ និងគ្រាប់រំសេវ": "technical", "ផែនទី និងភូមិសាស្ត្រ": "technical",
+    "ទ័ពពិសេស": "operations", "នគរបាលយោធា": "operations", "ការពារព្រំដែន": "operations",
+    "កាំភ្លើងធំ": "combat_support", "រថពាសដែក": "combat_support", "វិស្វកម្មយោធា": "combat_support",
+    "ដោះមីន និងគ្រាប់មិនទាន់ផ្ទុះ": "combat_support", "ការពារដែនអាកាស": "combat_support",
+    "អ្នកបើកយន្តហោះ": "air", "ជួសជុលយន្តហោះ": "air", "បញ្ជាចរាចរណ៍អាកាស": "air",
+    "នាវាចរណ៍": "navy", "ទាហានម៉ារីន": "navy", "គ្រឿងម៉ាស៊ីននាវា": "navy",
+    "គិលានុបដ្ឋាក": "health", "ឱសថសាស្ត្រ": "health", "ទន្តសាស្ត្រ": "health", "មន្ទីរពិសោធន៍វេជ្ជសាស្ត្រ": "health",
+    "ផ្គត់ផ្គង់ និងឃ្លាំង": "logistics", "ដឹកជញ្ជូន": "logistics", "អាហារដ្ឋាន": "logistics",
+    "គ្រូបង្ហាត់យោធា": "education", "កាយវប្បកម្ម និងកីឡា": "education", "គរុកោសល្យ": "education",
+    "យុត្តិធម៌យោធា": "legal", "អធិការកិច្ច": "legal",
+    "ការងារនយោបាយ": "political", "ព័ត៌មាន និងផ្សព្វផ្សាយ": "political", "តន្ត្រីយោធា": "political",
 }
 # draft sub-positions (មុខតំណែងរង): deputy -> head
 POSITION_PARENT = {
@@ -109,6 +123,46 @@ SPECIALTIES = [
     ("ការពារ និងអន្តរាគមន៍", "Protection and intervention", "military"),
     ("បើកបរ និងជួសជុលយានយន្ត", "Driving and vehicle maintenance", "military"),
     ("ចារកម្ម និងស៊ើបការណ៍", "Intelligence", "military"),
+    ("គណនេយ្យ", "Accounting", "civil"),
+    ("ធនធានមនុស្ស", "Human resources", "civil"),
+    ("បណ្ណសារ និងឯកសារ", "Archives and records", "civil"),
+    ("លទ្ធកម្ម", "Procurement", "civil"),
+    ("ទំនាក់ទំនងអន្តរជាតិ", "International relations", "civil"),
+    ("បកប្រែ", "Translation and interpretation", "civil"),
+    ("អគ្គិសនី និងអេឡិចត្រូនិក", "Electrical and electronics", "civil"),
+    ("សន្តិសុខព័ត៌មានវិទ្យា", "Cybersecurity", "civil"),
+    ("សំណង់", "Construction", "civil"),
+    ("ជួសជុលអាវុធ និងគ្រាប់រំសេវ", "Weapons and ammunition maintenance", "military"),
+    ("ផែនទី និងភូមិសាស្ត្រ", "Cartography and geography", "civil"),
+    ("ទ័ពពិសេស", "Special forces", "military"),
+    ("នគរបាលយោធា", "Military police", "military"),
+    ("ការពារព្រំដែន", "Border protection", "military"),
+    ("កាំភ្លើងធំ", "Artillery", "military"),
+    ("រថពាសដែក", "Armor", "military"),
+    ("វិស្វកម្មយោធា", "Military engineering", "military"),
+    ("ដោះមីន និងគ្រាប់មិនទាន់ផ្ទុះ", "Demining and UXO clearance", "military"),
+    ("ការពារដែនអាកាស", "Air defense", "military"),
+    ("អ្នកបើកយន្តហោះ", "Pilot", "military"),
+    ("ជួសជុលយន្តហោះ", "Aircraft maintenance", "military"),
+    ("បញ្ជាចរាចរណ៍អាកាស", "Air traffic control", "military"),
+    ("នាវាចរណ៍", "Navigation", "military"),
+    ("ទាហានម៉ារីន", "Marines", "military"),
+    ("គ្រឿងម៉ាស៊ីននាវា", "Marine engineering", "military"),
+    ("គិលានុបដ្ឋាក", "Nursing", "civil"),
+    ("ឱសថសាស្ត្រ", "Pharmacy", "civil"),
+    ("ទន្តសាស្ត្រ", "Dentistry", "civil"),
+    ("មន្ទីរពិសោធន៍វេជ្ជសាស្ត្រ", "Medical laboratory", "civil"),
+    ("ផ្គត់ផ្គង់ និងឃ្លាំង", "Supply and warehousing", "military"),
+    ("ដឹកជញ្ជូន", "Transport", "military"),
+    ("អាហារដ្ឋាន", "Food service", "military"),
+    ("គ្រូបង្ហាត់យោធា", "Military instructor", "military"),
+    ("កាយវប្បកម្ម និងកីឡា", "Physical training and sports", "military"),
+    ("គរុកោសល្យ", "Pedagogy", "civil"),
+    ("យុត្តិធម៌យោធា", "Military justice", "military"),
+    ("អធិការកិច្ច", "Inspection", "civil"),
+    ("ការងារនយោបាយ", "Political work", "military"),
+    ("ព័ត៌មាន និងផ្សព្វផ្សាយ", "Public information and media", "civil"),
+    ("តន្ត្រីយោធា", "Military music", "military"),
 ]
 
 LOOKUPS = {
@@ -152,6 +206,13 @@ LOOKUPS = {
         ("technical", "ផ្នែកបច្ចេកទេស", "Technical"),
         ("operations", "ផ្នែកប្រតិបត្តិការ", "Operations"),
         ("health", "ផ្នែកសុខាភិបាល", "Health"),
+        ("combat_support", "ផ្នែកគាំទ្រការប្រយុទ្ធ", "Combat support"),
+        ("air", "ផ្នែកកងទ័ពអាកាស", "Air force"),
+        ("navy", "ផ្នែកកងទ័ពជើងទឹក", "Navy"),
+        ("logistics", "ផ្នែកភស្តុភារ", "Logistics"),
+        ("education", "ផ្នែកអប់រំ និងបណ្ដុះបណ្ដាល", "Education and training"),
+        ("legal", "ផ្នែកច្បាប់ និងអធិការកិច្ច", "Legal and inspection"),
+        ("political", "ផ្នែកនយោបាយ និងព័ត៌មាន", "Political affairs and information"),
     ],
 }
 
@@ -267,21 +328,30 @@ def main(admin_password: str, source_dir: Path = PROJECT_ROOT) -> None:
             for i, (kh, en, grade) in enumerate(POSITIONS, start=1):
                 db.add(Position(name_kh=kh, name_en=en, grade=grade, sort_order=i))
 
-        if not db.scalar(select(Specialty.id).limit(1)):
-            for kh, en, category in SPECIALTIES:
-                db.add(Specialty(name_kh=kh, name_en=en, category=category))
-        else:
+        if db.scalar(select(Specialty.id).limit(1)):
             # the category column was added later (default 'military'): mark the draft civil specialties once
             civil = {kh for kh, _, category in SPECIALTIES if category == "civil"}
             for sp in db.scalars(select(Specialty).where(Specialty.name_kh.in_(civil), Specialty.category == "military",
                                                          Specialty.updated_at == Specialty.created_at)):
                 sp.category = "civil"
+        # add draft specialties missing by Khmer name (the list grew later); existing ones are never changed
+        have = set(db.scalars(select(Specialty.name_kh)))
+        for kh, en, category in SPECIALTIES:
+            if kh not in have:
+                db.add(Specialty(name_kh=kh, name_en=en, category=category))
 
         for cat, items in LOOKUPS.items():
-            if db.scalar(select(Lookup.id).where(Lookup.category == cat).limit(1)):
+            existing = db.scalars(select(Lookup).where(Lookup.category == cat)).all()
+            if existing and cat != "specialty_section":
                 continue
-            for i, (code, kh, en) in enumerate(items, start=1):
-                db.add(Lookup(category=cat, code=code, name_kh=kh, name_en=en, sort_order=i))
+            # sections grew later: add the ones missing by code or Khmer name, after the existing ones
+            have = {lk.code for lk in existing} | {lk.name_kh for lk in existing}
+            order = max((lk.sort_order for lk in existing), default=0)
+            for code, kh, en in items:
+                if code in have or kh in have:
+                    continue
+                order += 1
+                db.add(Lookup(category=cat, code=code, name_kh=kh, name_en=en, sort_order=order))
 
         if not db.scalar(select(Lookup.id).where(Lookup.category == "occupation").limit(1)):
             member_db = source_dir / "member_db.sql"

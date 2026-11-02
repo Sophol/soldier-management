@@ -7,6 +7,8 @@ const props = defineProps({
   placeholder: { type: String, default: 'ជ្រើសរើសអង្គភាព' },
   maxLevel: { type: Number, default: 4 },
   excludeId: { type: Number, default: null },
+  // only this unit and its sub-units (e.g. one ស្ថាប័នកងឯកភាព)
+  rootId: { type: Number, default: null },
 })
 const emit = defineEmits(['update:modelValue', 'change'])
 const lookups = useLookups()
@@ -15,7 +17,8 @@ const data = computed(() => {
   const map = (nodes) => nodes
     .filter((n) => n.id !== props.excludeId && n.level <= props.maxLevel)
     .map((n) => ({ value: n.id, label: n.name_kh, disabled: !n.active, children: map(n.children || []) }))
-  return map(lookups.unitTree)
+  const root = props.rootId && lookups.unitMap[props.rootId]
+  return map(root ? [root] : lookups.unitTree)
 })
 
 const value = computed({

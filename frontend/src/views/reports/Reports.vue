@@ -19,17 +19,21 @@ const f = reactive({
 })
 // soldier list: the fields to show (ជ្រើសរើសព័ត៌មាន); the server sends the full catalog with the report
 const fieldCatalog = ref([])
+// soldier list: shown one page at a time (the Excel file has every row)
+const paging = reactive({ page: 1, size: 100 })
 
-const usesDates = computed(() => ['movements', 'decisions', 'training', 'discipline', 'awards', 'retirement', 'separation', 'conscripts'].includes(f.key))
+const usesDates = computed(() => ['movements', 'decisions', 'training', 'discipline', 'awards', 'retirement', 'category2', 'separation', 'conscripts'].includes(f.key))
 const kindOptions = computed(() => ({
   decisions: [{ value: 'appoint', label: 'តែងតាំង' }, { value: 'transfer', label: 'ផ្លាស់ប្ដូរ' }, { value: 'promote', label: 'ដំឡើងស័ក្តិ' }],
   training: [{ value: 'long', label: 'រយៈពេលវែង' }, { value: 'short', label: 'រយៈពេលខ្លី' }],
-  retirement: [{ value: 'pension', label: 'សោធននិវត្តន៍' }, { value: 'voluntary', label: 'ស្ម័គ្រចិត្ត' }, { value: 'category2', label: 'យោធិនប្រភេទ២' }],
+  retirement: [{ value: 'pension', label: 'សោធននិវត្តន៍' }, { value: 'voluntary', label: 'ស្ម័គ្រចិត្ត' }],
+  category2: [{ value: 'fallen', label: 'ពលី' }, { value: 'fallen_dead', label: 'ពលី-មរណ' }, { value: 'disabled', label: 'ពិការ' }],
 })[f.key] || null)
 
 function params() {
   const p = { unit_id: f.unit_id || undefined, kind: f.kind || undefined }
   if (f.key === 'soldier_list' && f.fields.length) p.fields = f.fields.join(',')
+  if (f.key === 'soldier_list') Object.assign(p, { page: paging.page, size: paging.size })
   if (usesDates.value) Object.assign(p, { date_from: f.date_from, date_to: f.date_to })
   return p
 }
@@ -47,8 +51,16 @@ async function run() {
   }
 }
 
+function search() {
+  paging.page = 1
+  run()
+}
+
 function exportXlsx() {
-  download(`/reports/${f.key}`, { ...params(), format: 'xlsx' }, `${f.key}.xlsx`)
+  const p = params()
+  delete p.page // the file gets every row
+  delete p.size
+  download(`/reports/${f.key}`, { ...p, format: 'xlsx' }, `${f.key}.xlsx`)
 }
 
 function printReport() {
@@ -62,7 +74,7 @@ function cell(row, key) {
   return typeof v === 'number' ? num(v) : v
 }
 
-watch(() => f.key, () => { f.kind = null; run() })
+watch(() => f.key, () => { f.kind = null; search() })
 onMounted(async () => {
   catalog.value = (await http.get('/reports')).data
   run()
@@ -73,13 +85,19 @@ onMounted(async () => {
   <div class="page">
     <div class="page-head"><h2>របាយការណ៍</h2></div>
     <el-card shadow="never" class="filter-card">
-      <el-form inline @submit.prevent="run">
+      <el-form inline @submit.prevent="search">
         <el-form-item label="របាយការណ៍">
           <el-select v-model="f.key" style="width: 380px">
             <el-option v-for="r in catalog" :key="r.key" :value="r.key" :label="r.title" />
           </el-select>
         </el-form-item>
         <el-form-item label="អង្គភាព"><div style="width: 240px"><UnitTreeSelect v-model="f.unit_id" /></div></el-form-item>
+        <el-form-item v-if="f.key === 'strength_by_unit'" label="បង្ហាញតាម">
+          <el-radio-group v-model="f.kind" @change="search">
+            <el-radio-button :value="null">ថ្នាក់ស័ក្តិ</el-radio-button>
+            <el-radio-button value="rank">ឋានន្តរស័ក្តិ</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item v-if="kindOptions" label="ប្រភេទ">
           <el-select v-model="f.kind" clearable style="width: 150px">
             <el-option v-for="o in kindOptions" :key="o.value" v-bind="o" />
@@ -112,6 +130,9 @@ onMounted(async () => {
             <template #default="{ row }"><span :class="{ bold: row._level === 1 }">{{ cell(row, c.key) }}</span></template>
           </el-table-column>
         </el-table>
+        <el-pagination v-if="report.paging" v-model:current-page="paging.page" v-model:page-size="paging.size" class="pager"
+                       background layout="total, sizes, prev, pager, next" :total="report.paging.total"
+                       :page-sizes="[100, 200, 500, 1000]" @current-change="run" @size-change="search" />
         <div v-if="report.totals" class="totals">
           <template v-for="c in report.columns" :key="c.key">
             <span v-if="report.totals[c.key] !== undefined && report.totals[c.key] !== ''">

@@ -14,7 +14,7 @@ const LEVEL = { basic: 'វគ្គបណ្ដុះបណ្ដាល', refre
 const levelOptions = Object.entries(LEVEL).map(([value, label]) => ({ value, label }))
 const SECTOR = { military: 'យោធា', civil: 'ស៊ីវិល' }
 const sectorOptions = Object.entries(SECTOR).map(([value, label]) => ({ value, label }))
-const cambodiaId = () => lookups.list('countries').find((c) => c.name_en === 'Cambodia')?.id
+const cambodiaId = () => lookups.list('countries').find((c) => c.name_en === 'Cambodia' || c.name_kh?.includes('កម្ពុជា'))?.id
 const abroad = (r) => !!r.country_id && r.country_id !== cambodiaId()
 const COURSE_STATUS = [{ value: 'upcoming', label: 'មិនទាន់ចាប់ផ្ដើម' }, { value: 'ongoing', label: 'កំពុងរៀន' }, { value: 'finished', label: 'បានបញ្ចប់' }]
 const PARTICIPANT_STATUS = { studying: 'កំពុងរៀន', completed: 'បញ្ចប់', dropped: 'ឈប់' }

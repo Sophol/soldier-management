@@ -18,6 +18,7 @@ import FormField from './FormField.vue'
 import SavedFilters from './SavedFilters.vue'
 import FileAttachments from './FileAttachments.vue'
 import PendingFiles from './PendingFiles.vue'
+import { useTableHeight } from '@/composables/useTableHeight'
 
 const props = defineProps({ config: { type: Object, required: true } })
 const emit = defineEmits(['saved'])
@@ -34,6 +35,7 @@ const AUDIT_KEYS = ['created_by', 'created_from', 'created_to', 'updated_from', 
 const filterKeys = () => [...(cfg.value.filters || []).map((f) => f.key), ...(cfg.value.auditFilters ? AUDIT_KEYS : [])]
 // filters can come from the URL (e.g. /documents/incoming?document_type_id=3), so other pages can link here
 const route = useRoute()
+const tableHeight = useTableHeight()
 const router = useRouter()
 for (const key of filterKeys()) {
   const v = route.query[key]
@@ -276,13 +278,14 @@ defineExpose({ load, openCreate, openEdit })
     </el-card>
 
     <el-card shadow="never">
-      <el-table v-loading="loading" :data="rows" stripe border empty-text="គ្មានទិន្នន័យ">
+      <el-table v-loading="loading" :data="rows" stripe border empty-text="គ្មានទិន្នន័យ" :max-height="tableHeight">
         <el-table-column type="index" label="ល.រ" width="60" :index="(i) => num((query.page - 1) * query.size + i + 1)" />
         <el-table-column v-for="col in cfg.columns" :key="col.key" :label="col.label" :width="col.width"
                          :min-width="col.minWidth || 120" show-overflow-tooltip>
           <template #default="{ row }">
             <slot :name="`cell-${col.key}`" :row="row">
               <el-tag v-if="col.tag" :type="col.tag(row)" size="small">{{ cell(row, col) }}</el-tag>
+              <router-link v-else-if="col.link && col.link(row)" :to="col.link(row)">{{ cell(row, col) }}</router-link>
               <span v-else>{{ cell(row, col) }}</span>
             </slot>
           </template>

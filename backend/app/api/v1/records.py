@@ -1,14 +1,18 @@
 """Training, discipline, awards, retirement/category-2, separation and strength movements."""
 
+import re
 from datetime import date, timedelta
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import and_, delete, extract, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.crud import crud_router
+from app.core.database import get_db
+from app.core.deps import require
 from app.models import (
     AwardRecord,
+    Category2Record,
     Country,
     DisciplineRecord,
     MilitaryCard,
@@ -22,15 +26,24 @@ from app.models import (
 )
 from app.schemas import (
     AwardIn,
+    Category2In,
     DisciplineIn,
     MilitaryCardIn,
+    RetirementBulkCheckIn,
+    RetirementBulkIn,
     RetirementIn,
     SeparationIn,
     StrengthIn,
     TrainingCourseIn,
 )
-from app.services.common import scope_unit_ids, to_dict
-from app.services.soldier import add_movement, is_inactive, status_id_by_code
+from app.services.common import audit, check_unit_in_scope, scope_unit_ids, to_dict
+from app.services.soldier import (
+    add_movement,
+    format_military_id,
+    is_inactive,
+    is_separated,
+    status_id_by_code,
+)
 
 router = APIRouter()
 
@@ -73,7 +86,9 @@ def _check_period(data: dict) -> None:
 
 
 def _soldier_hook(db, user, obj, data, is_new):
-    _check_soldier(db, user, data["soldier_id"])
+    s = _check_soldier(db, user, data["soldier_id"])
+    if is_new and is_separated(db, s):  # the record of a separated soldier is kept as it was
+        raise HTTPException(400, "យោធិននេះបានចេញពីជួររួចហើយ")
     if not is_new and data["soldier_id"] != obj.soldier_id:
         raise HTTPException(400, "មិនអាចប្ដូរយោធិនក្នុងកំណត់ត្រានេះបានទេ")
 
@@ -118,11 +133,17 @@ def _course_status_filter(stmt, v):
     }.get(v, TrainingCourse.id.is_not(None)))
 
 
+# the country rows that are Cambodia (none in some data: then every course with a country is abroad)
+CAMBODIA_IDS = select(Country.id).where(or_(Country.name_en == "Cambodia", Country.name_kh.contains("កម្ពុជា")))
+
+
+def course_abroad():
+    """ក្នុង/ក្រៅប្រទេស: a course with a country other than Cambodia is abroad (no country: in Cambodia)."""
+    return and_(TrainingCourse.country_id.is_not(None), TrainingCourse.country_id.not_in(CAMBODIA_IDS))
+
+
 def _abroad_filter(stmt, v):
-    """ក្នុង/ក្រៅប្រទេស: a course with a country other than Cambodia is abroad."""
-    cambodia = select(Country.id).where(Country.name_en == "Cambodia").scalar_subquery()
-    abroad = and_(TrainingCourse.country_id.is_not(None), TrainingCourse.country_id != cambodia)
-    return stmt.where(abroad if v == "yes" else not_(abroad))
+    return stmt.where(course_abroad() if v == "yes" else not_(course_abroad()))
 
 
 def _participant_status_filter(stmt, v):
@@ -250,10 +271,11 @@ def _leave_after_delete(table: str):
 
 
 RETIREMENT_TYPES = {"pension": "សោធននិវត្តន៍ (គ្រប់អាយុ)", "voluntary": "ស្ម័គ្រចិត្តចូលនិវត្តន៍",
-                    "disability": "ពិការ", "death": "ស្លាប់", "category2": "យោធិនប្រភេទ២"}
+                    "disability": "ពិការ", "death": "ស្លាប់"}
 CASE_STATUS = {"submitted": "ដាក់ឯកសារ", "processing": "កំពុងដំណើរការ", "done": "រួចរាល់"}
 # the soldier's status once the record is saved
-RETIREMENT_SOLDIER_STATUS = {"category2": "category2", "death": "deceased"}
+RETIREMENT_SOLDIER_STATUS = {"death": "deceased"}
+CATEGORY2_TYPES = {"fallen": "ពលី", "fallen_dead": "ពលី-មរណ", "disabled": "ពិការ"}
 
 
 def retirement_out(r: RetirementRecord) -> dict:
@@ -261,8 +283,79 @@ def retirement_out(r: RetirementRecord) -> dict:
             "case_status_name": CASE_STATUS.get(r.case_status)}
 
 
+def category2_out(r: Category2Record) -> dict:
+    return {**to_dict(r), **soldier_brief(r.soldier), "type_name": CATEGORY2_TYPES.get(r.type, "មិនទាន់កំណត់")}
+
+
 def separation_out(r: SeparationRecord) -> dict:
     return {**to_dict(r), **soldier_brief(r.soldier), "reason_name": r.reason.name_kh if r.reason else None}
+
+
+_retirement_after_save = _leave_after_save(
+    "retirement_records", lambda o: RETIREMENT_SOLDIER_STATUS.get(o.type, "retired"), lambda o: "retire")
+
+
+@router.post("/retirements/bulk/check", tags=["retirement"])
+def check_bulk_retirement(payload: RetirementBulkCheckIn, db: Session = Depends(get_db),
+                          user: User = Depends(require("retirement", "create"))):
+    """The pasted military IDs, each with its soldier and whether it can be retired (nothing is written)."""
+    mids = list(dict.fromkeys(format_military_id(x) for x in re.split(r"[\s,;]+", payload.military_ids) if x))[:1000]
+    found = {s.military_id: s for s in db.scalars(select(Soldier).where(
+        Soldier.military_id.in_(mids), Soldier.deleted_at.is_(None)))} if mids else {}
+    scope = scope_unit_ids(db, user)
+    rows = []
+    for mid in mids:
+        s = found.get(mid)
+        if s is None:
+            rows.append({"military_id": mid, "status": "not_found", "message": "រកមិនឃើញអត្តលេខនេះ"})
+            continue
+        row = {"military_id": mid, "soldier_id": s.id, **soldier_brief(s), "unit_id": s.current_unit_id}
+        if scope is not None and s.current_unit_id not in scope:
+            rows.append({"military_id": mid, "status": "out_of_scope", "message": "នៅក្រៅសិទ្ធិរបស់អ្នក"})
+        elif is_inactive(db, s):
+            rows.append({**row, "status": "inactive", "message": "បានចូលនិវត្តន៍ ឬចេញពីជួររួចហើយ"})
+        else:
+            rows.append({**row, "status": "ok", "message": None})
+    return rows
+
+
+@router.post("/retirements/bulk", status_code=201, tags=["retirement"])
+def create_bulk_retirement(payload: RetirementBulkIn, request: Request, db: Session = Depends(get_db),
+                           user: User = Depends(require("retirement", "create"))):
+    """One retirement record per soldier (all or none); with unit_id every soldier is also moved to that unit,
+    which shows in the soldier list and in each soldier's history (no strength movement: they have left)."""
+    from app.api.v1.soldiers import record_edit  # local import: soldiers imports a lot
+
+    if payload.unit_id:
+        check_unit_in_scope(db, user, payload.unit_id)
+    data = payload.model_dump(exclude={"soldier_ids", "unit_id"})
+    created = []
+    for soldier_id in dict.fromkeys(payload.soldier_ids):
+        values = {**data, "soldier_id": soldier_id}
+        obj = RetirementRecord()
+        try:
+            _leave_before(db, user, obj, values, True)
+        except HTTPException as e:
+            s = db.get(Soldier, soldier_id)
+            mid = s.military_id if s else soldier_id
+            db.rollback()  # all or none: the soldiers already done in this batch are not kept
+            raise HTTPException(e.status_code, f"{mid}: {e.detail}")
+        for k, v in values.items():
+            setattr(obj, k, v)
+        obj.created_by = user.id
+        db.add(obj)
+        db.flush()
+        _retirement_after_save(db, user, obj, True)  # the "out" movement is from the unit the soldier left
+        s = obj.soldier
+        if payload.unit_id and payload.unit_id != s.current_unit_id:
+            old = (s.current_rank_id, s.current_position_id, s.current_unit_id)
+            old_unit_date = s.unit_transfer_date
+            s.current_unit_id, s.unit_transfer_date, s.updated_by = payload.unit_id, payload.effective_date, user.id
+            record_edit(db, s, old, old_unit_date, "ផ្លាស់អង្គភាព ពេលចូលនិវត្តន៍")
+        audit(db, user, "create", obj, request=request)
+        created.append(obj)
+    db.commit()
+    return {"created": len(created), "items": [retirement_out(o) for o in created]}
 
 
 router.include_router(crud_router(
@@ -274,9 +367,18 @@ router.include_router(crud_router(
     custom_filters={"year": by_year(RetirementRecord.effective_date)},
     order_by=(RetirementRecord.effective_date.desc(), RetirementRecord.id.desc()),
     serialize=retirement_out, base_query=scoped(RetirementRecord), before_save=_leave_before,
-    after_save=_leave_after_save("retirement_records", lambda o: RETIREMENT_SOLDIER_STATUS.get(o.type, "retired"),
-                                 lambda o: "category2" if o.type == "category2" else "retire"),
-    after_delete=_leave_after_delete("retirement_records"), tags=["retirement"],
+    after_save=_retirement_after_save, after_delete=_leave_after_delete("retirement_records"), tags=["retirement"],
+))
+router.include_router(crud_router(
+    prefix="/category2", model=Category2Record, module="category2", schema=Category2In,
+    search_fields=(Category2Record.decision_no, Category2Record.notes),
+    filter_fields={"type": Category2Record.type, "soldier_id": Category2Record.soldier_id,
+                   "date_from": Category2Record.effective_date, "date_to": Category2Record.effective_date},
+    custom_filters={"year": by_year(Category2Record.effective_date)},
+    order_by=(Category2Record.effective_date.desc(), Category2Record.id.desc()),
+    serialize=category2_out, base_query=scoped(Category2Record), before_save=_leave_before,
+    after_save=_leave_after_save("category2_records", lambda o: "category2", lambda o: "category2"),
+    after_delete=_leave_after_delete("category2_records"), tags=["category2"],
 ))
 router.include_router(crud_router(
     prefix="/separations", model=SeparationRecord, module="separation", schema=SeparationIn,

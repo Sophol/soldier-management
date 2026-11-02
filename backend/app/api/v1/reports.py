@@ -7,14 +7,18 @@ from io import BytesIO
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font
-from sqlalchemy import extract, func, or_, select
+from openpyxl.utils import get_column_letter
+from sqlalchemy import and_, case, extract, false, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.api.v1.conscripts import registration_counts
 from app.api.v1.decisions import IN_PROGRESS, can_act_at, overdue_cutoff
 from app.api.v1.records import (
+    CAMBODIA_IDS,
     CASE_STATUS,
+    CATEGORY2_TYPES,
     DISCIPLINE_STATUS,
     MOVEMENT_REASONS,
     PARTICIPANT_STATUS,
@@ -26,8 +30,8 @@ from app.core.database import get_db
 from app.core.deps import require
 from app.models import (
     AuditLog,
+    Category2Record,
     AwardRecord,
-    Country,
     Decision,
     DisciplineRecord,
     DocumentIncoming,
@@ -50,8 +54,9 @@ from app.models import (
 )
 from app.models.conscript import REGISTRATION_STATUSES
 from app.models.decision import DECISION_KINDS
-from app.services.common import scope_unit_ids, unit_subtree_ids
+from app.services.common import in_batches, paginate, scope_unit_ids, unit_subtree_ids
 from app.services.soldier import age, diff_ym, soldier_summary, years_to_next_rank, ym_text
+from app.services.soldier_io import MAX_EXPORT_ROWS
 from app.services.staffing import serving
 
 router = APIRouter(tags=["reports"])
@@ -60,8 +65,9 @@ router = APIRouter(tags=["reports"])
 LIVE_MOVEMENT = StrengthMovement.soldier_id.in_(select(Soldier.id).where(Soldier.deleted_at.is_(None)))
 
 
-def active_soldiers(db: Session, user: User, unit_id: int | None = None):
-    stmt = serving(select(Soldier))
+def active_soldiers(db: Session, user: User, unit_id: int | None = None, stmt=None):
+    """Serving soldiers in the user's scope (and unit). `stmt` replaces select(Soldier), e.g. for counts."""
+    stmt = serving(stmt if stmt is not None else select(Soldier))
     scope = scope_unit_ids(db, user)
     if scope is not None:
         stmt = stmt.where(Soldier.current_unit_id.in_(scope))
@@ -77,14 +83,42 @@ def _add_years(d: date, years: int) -> date:
         return d.replace(year=d.year + years, day=28)
 
 
+def _born_by(day: date, years: int) -> date:
+    """The latest birth date whose `years`-th anniversary (_add_years) falls on or before `day`
+    (one day later than _add_years(day, -years) when that misses a 29 February birthday)."""
+    born = _add_years(day, -years)
+    nxt = born + timedelta(days=1)
+    return nxt if _add_years(nxt, years) <= day else born
+
+
+def promotion_clause(db: Session):
+    """SQL condition: time in rank reached the minimum for the soldier's service track (administrative / combat),
+    the same rule as years_to_next_rank; one cut-off date per rank, so no soldier is loaded to check it."""
+    today = date.today()
+    combat = func.coalesce(Soldier.service_track, "admin") == "combat"
+    conds = []
+    for r in db.scalars(select(Rank)):
+        admin_years = r.min_years_to_next
+        combat_years = r.min_years_combat if r.min_years_combat is not None else r.min_years_to_next
+        if admin_years is not None:
+            conds.append(and_(Soldier.current_rank_id == r.id, ~combat,
+                              Soldier.rank_date <= _add_years(today, -admin_years)))
+        if combat_years is not None:
+            conds.append(and_(Soldier.current_rank_id == r.id, combat,
+                              Soldier.rank_date <= _add_years(today, -combat_years)))
+    return or_(*conds) if conds else false()
+
+
 def promotion_due(db: Session, user: User, unit_id: int | None = None) -> list[Soldier]:
     """Soldiers whose time in rank reached the minimum for their service track (administrative / combat)."""
     stmt = active_soldiers(db, user, unit_id).join(Rank, Rank.id == Soldier.current_rank_id).where(
-        or_(Rank.min_years_to_next.is_not(None), Rank.min_years_combat.is_not(None)), Soldier.rank_date.is_not(None),
-    ).order_by(Rank.sort_order.desc(), Soldier.rank_date)
-    today = date.today()
-    return [s for s in db.scalars(stmt).unique()
-            if years_to_next_rank(s) is not None and s.rank_date <= _add_years(today, -years_to_next_rank(s))]
+        promotion_clause(db)).order_by(Rank.sort_order.desc(), Soldier.rank_date)
+    return list(db.scalars(stmt).unique())
+
+
+def retirement_ages(db: Session) -> dict[str, int]:
+    return {"M": int(get_setting(db, "retirement_age_male", "60") or 60),
+            "F": int(get_setting(db, "retirement_age_female", "55") or 55)}
 
 
 def retirement_age(s: Soldier, by_gender: dict[str, int]) -> int:
@@ -94,38 +128,75 @@ def retirement_age(s: Soldier, by_gender: dict[str, int]) -> int:
     return by_gender.get(s.gender, by_gender["M"])
 
 
-def retirement_due(db: Session, user: User, unit_id: int | None = None) -> list[tuple[Soldier, date]]:
+def retiring_clause(db: Session, horizon: date):
+    """SQL condition: the soldier reaches the retirement age (retirement_age) on or before `horizon`."""
+    by_gender = retirement_ages(db)
+    by_rank = {r.id: r.retirement_age for r in db.scalars(select(Rank)) if r.retirement_age}
+    dob = Soldier.date_of_birth
+    conds = [and_(Soldier.current_rank_id == rid, dob <= _born_by(horizon, a)) for rid, a in by_rank.items()]
+    gender_age = or_(Soldier.current_rank_id.is_(None), Soldier.current_rank_id.not_in(list(by_rank))) if by_rank else true()
+    female = Soldier.gender == "F"
+    conds.append(and_(gender_age, female, dob <= _born_by(horizon, by_gender["F"])))
+    conds.append(and_(gender_age, or_(Soldier.gender.is_(None), ~female), dob <= _born_by(horizon, by_gender["M"])))
+    return or_(*conds)
+
+
+def retirement_horizon(db: Session) -> date:
     months = int(get_setting(db, "alert_months_ahead", "6") or 6)
-    return retiring_by(db, active_soldiers(db, user, unit_id), date.today() + timedelta(days=months * 30))
+    return date.today() + timedelta(days=months * 30)
+
+
+def retirement_due(db: Session, user: User, unit_id: int | None = None) -> list[tuple[Soldier, date]]:
+    return retiring_by(db, active_soldiers(db, user, unit_id), retirement_horizon(db))
 
 
 def retiring_by(db: Session, stmt, horizon: date) -> list[tuple[Soldier, date]]:
     """Soldiers of `stmt` who reach their retirement age on or before `horizon`, with that date (soonest first)."""
-    by_gender = {"M": int(get_setting(db, "retirement_age_male", "60") or 60),
-                 "F": int(get_setting(db, "retirement_age_female", "55") or 55)}
-    # nobody can be due before the youngest possible retirement age: filter in SQL first
-    youngest = min([*by_gender.values(), *(a for a in db.scalars(select(Rank.retirement_age)) if a)])
-    stmt = stmt.where(Soldier.date_of_birth <= _add_years(horizon, -youngest))
-    out = []
-    for s in db.scalars(stmt).unique():
-        retire_on = _add_years(s.date_of_birth, retirement_age(s, by_gender))
-        if retire_on <= horizon:
-            out.append((s, retire_on))
+    by_gender = retirement_ages(db)
+    out = [(s, _add_years(s.date_of_birth, retirement_age(s, by_gender)))
+           for s in db.scalars(stmt.where(retiring_clause(db, horizon))).unique()]
     return sorted(out, key=lambda x: x[1])
 
 
 @router.get("/dashboard/summary")
 def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashboard", "view"))):
     today = date.today()
-    soldiers = db.scalars(active_soldiers(db, user)).unique().all()
+    # every count is done by the database (COUNT / GROUP BY): no soldier is loaded, whatever the strength
+    def counts(*cols, joins=()):
+        stmt = select(*cols, func.count(Soldier.id)).select_from(Soldier)
+        for target, on in joins:
+            stmt = stmt.outerjoin(target, on)
+        return db.execute(active_soldiers(db, user, stmt=stmt).group_by(*cols)).all()
+
+    def count_where(cond) -> int:
+        return db.scalar(active_soldiers(db, user, stmt=select(func.count(Soldier.id)).select_from(Soldier)).where(cond))
+
+    missing_conds = {
+        "photo": or_(Soldier.photo_path.is_(None), Soldier.photo_path == ""),
+        "national_id": or_(Soldier.national_id.is_(None), Soldier.national_id == ""),
+        "unit": Soldier.current_unit_id.is_(None),
+        "dob": Soldier.date_of_birth.is_(None),
+        "enlistment": Soldier.enlistment_date.is_(None),
+        "rank_date": Soldier.rank_date.is_(None),
+    }
+    totals = db.execute(active_soldiers(db, user, stmt=select(
+        func.count(Soldier.id), *(func.coalesce(func.sum(case((cond, 1), else_=0)), 0) for cond in missing_conds.values()),
+    ).select_from(Soldier))).one()
+    total_active, missing = totals[0], dict(zip(missing_conds, totals[1:], strict=True))
+
     by_class, by_gender, by_status, by_institution = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
+    for name, n in counts(RankClass.name_kh, joins=[(Rank, Rank.id == Soldier.current_rank_id),
+                                                     (RankClass, RankClass.id == Rank.rank_class_id)]):
+        by_class[name or "មិនទាន់កំណត់"] += n
+    for gender, n in counts(Soldier.gender):
+        by_gender["ប្រុស" if gender == "M" else "ស្រី"] += n
+    for name, n in counts(Lookup.name_kh):  # serving() already joins the status lookup
+        by_status[name or "មិនទាន់កំណត់"] += n
     institutions = {u.id: u.name_kh for u in db.scalars(select(Unit).where(Unit.level == 1))}
-    for s in soldiers:
-        by_class[s.rank.rank_class.name_kh if s.rank else "មិនទាន់កំណត់"] += 1
-        by_gender["ប្រុស" if s.gender == "M" else "ស្រី"] += 1
-        by_status[s.status.name_kh if s.status else "មិនទាន់កំណត់"] += 1
-        root = int(s.unit.path.strip("/").split("/")[0]) if s.unit else None
-        by_institution[institutions.get(root, "មិនទាន់កំណត់")] += 1
+    paths = dict(db.execute(select(Unit.id, Unit.path)).all())
+    for unit_id, n in counts(Soldier.current_unit_id):
+        root = int(paths[unit_id].strip("/").split("/")[0]) if unit_id in paths else None
+        by_institution[institutions.get(root, "មិនទាន់កំណត់")] += n
 
     scope = scope_unit_ids(db, user)
     total_stmt = select(func.count(Soldier.id)).where(Soldier.deleted_at.is_(None))
@@ -183,7 +254,7 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
     cards_expiring = db.scalar(cards_stmt)
 
     return {
-        "total_active": len(soldiers),
+        "total_active": total_active,
         "total_all": total_all,
         "by_rank_class": dict(by_class),
         "by_gender": dict(by_gender),
@@ -194,31 +265,30 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
         "workflow": {"waiting_for_me": waiting_for_me, "overdue": overdue},
         "movements": {"months": months, "in": list(series["in"].values()), "out": list(series["out"].values())},
         "alerts": {
-            "promotion_due": len(promotion_due(db, user)),
-            "retirement_due": len(retirement_due(db, user)),
+            "promotion_due": count_where(promotion_clause(db)),
+            "retirement_due": count_where(retiring_clause(db, retirement_horizon(db))),
             "discipline_ending": disc_ending,
             "cards_expiring": cards_expiring,
-            "missing_photo": sum(1 for s in soldiers if not s.photo_path),
-            "missing_national_id": sum(1 for s in soldiers if not s.national_id),
-            "missing_unit": sum(1 for s in soldiers if not s.current_unit_id),
-            "missing_dob": sum(1 for s in soldiers if not s.date_of_birth),
-            "missing_enlistment": sum(1 for s in soldiers if not s.enlistment_date),
-            "missing_rank_date": sum(1 for s in soldiers if not s.rank_date),
+            **{f"missing_{k}": int(v) for k, v in missing.items()},
         },
         # យោធិនប្រភេទ១ = serving soldiers; ប្រភេទ២ = soldiers moved to category 2 (no longer in the strength)
-        "categories": {"category1": len(soldiers), "category2": _count_status(db, scope, "category2")},
+        "categories": {"category1": total_active, **_category2_counts(db, scope)},
         "requests": {  # សំណើ (document type "request") registered this year
             "incoming": _requests(db, DocumentIncoming, today.year), "outgoing": _requests(db, DocumentOutgoing, today.year)},
         "studying": _studying(db, scope, today),
     }
 
 
-def _count_status(db: Session, scope, code: str) -> int:
-    stmt = select(func.count(Soldier.id)).join(Lookup, Lookup.id == Soldier.status_id).where(
-        Soldier.deleted_at.is_(None), Lookup.category == "soldier_status", Lookup.code == code)
+def _category2_counts(db: Session, scope) -> dict:
+    """យោធិនប្រភេទ២ (ពលី, ពលី-មរណ, ពិការ): soldiers with a category-2 record, by type."""
+    stmt = select(Category2Record.type, func.count(func.distinct(Category2Record.soldier_id))).join(
+        Soldier, Soldier.id == Category2Record.soldier_id).where(
+        Category2Record.deleted_at.is_(None), Soldier.deleted_at.is_(None))
     if scope is not None:
         stmt = stmt.where(Soldier.current_unit_id.in_(scope))
-    return db.scalar(stmt) or 0
+    by_type = dict(db.execute(stmt.group_by(Category2Record.type)).all())
+    return {"category2": sum(by_type.values()),
+            "category2_by_type": {k: by_type.get(k, 0) for k in CATEGORY2_TYPES} | {"none": by_type.get(None, 0)}}
 
 
 def _requests(db: Session, model, year: int) -> int:
@@ -227,17 +297,19 @@ def _requests(db: Session, model, year: int) -> int:
 
 
 def _studying(db: Session, scope, today: date) -> dict:
-    """Serving soldiers in a course that is running today, in Cambodia and abroad."""
-    cambodia = db.scalar(select(Country.id).where(Country.name_en == "Cambodia"))
+    """Serving soldiers still studying (participant status កំពុងរៀន) in a course that has not ended,
+    in Cambodia (no country, or Cambodia) and abroad. A course without dates counts as running."""
     stmt = serving(select(TrainingCourse.country_id, func.count(func.distinct(Soldier.id)))
                    .select_from(Soldier).join(TrainingParticipant, TrainingParticipant.soldier_id == Soldier.id)
                    .join(TrainingCourse, TrainingCourse.id == TrainingParticipant.course_id)).where(
-        TrainingCourse.deleted_at.is_(None), TrainingCourse.start_date <= today,
+        TrainingCourse.deleted_at.is_(None), TrainingParticipant.status == "studying",
+        or_(TrainingCourse.start_date.is_(None), TrainingCourse.start_date <= today),
         or_(TrainingCourse.end_date.is_(None), TrainingCourse.end_date >= today))
     if scope is not None:
         stmt = stmt.where(Soldier.current_unit_id.in_(scope))
+    cambodia = set(db.scalars(CAMBODIA_IDS))
     rows = db.execute(stmt.group_by(TrainingCourse.country_id)).all()
-    abroad = sum(n for country, n in rows if country and country != cambodia)
+    abroad = sum(n for country, n in rows if country and country not in cambodia)
     return {"in_country": sum(n for _, n in rows) - abroad, "abroad": abroad}
 
 
@@ -253,7 +325,8 @@ ACTION_NAMES = {
 TABLE_NAMES = {
     "soldiers": "ប្រវត្តិរូបយោធិន", "decisions": "សេចក្ដីសម្រេច", "documents_incoming": "ឯកសារចូល",
     "documents_outgoing": "ឯកសារចេញ", "training_courses": "វគ្គបណ្ដុះបណ្ដាល", "award_records": "ការសរសើរ",
-    "discipline_records": "វិន័យ", "retirement_records": "សោធននិវត្តន៍", "separation_records": "ចេញពីជួរ",
+    "discipline_records": "វិន័យ", "retirement_records": "សោធននិវត្តន៍",
+    "category2_records": "យោធិនប្រភេទ២", "separation_records": "ចេញពីជួរ",
     "strength_movements": "កើនថយ", "conscripts": "យុវជនកាតព្វកិច្ច", "conscript_registrations": "ការចុះឈ្មោះកាតព្វកិច្ច",
     "conscript_medicals": "ការពិនិត្យសុខភាព", "conscript_services": "ការបម្រើកាតព្វកិច្ច", "users": "អ្នកប្រើប្រាស់",
     "roles": "តួនាទី", "units": "អង្គភាព", "unit_positions": "ក្របខណ្ឌ", "document_files": "ឯកសារភ្ជាប់",
@@ -292,7 +365,8 @@ REPORTS = {
     "training": "របាយការណ៍បណ្ដុះបណ្ដាល",
     "discipline": "របាយការណ៍វិន័យ និងទណ្ឌកម្ម",
     "awards": "របាយការណ៍សរសើរ និងគ្រឿងឥស្សរិយយស",
-    "retirement": "បញ្ជីសោធននិវត្តន៍ និងយោធិនប្រភេទ២",
+    "retirement": "បញ្ជីសោធននិវត្តន៍",
+    "category2": "បញ្ជីយោធិនប្រភេទ២ (ពលី ពលី-មរណ ពិការ)",
     "separation": "បញ្ជីយោធិនចេញពីជួរ",
     "conscripts": "ស្ថិតិយុវជនបំពេញកាតព្វកិច្ចយោធា តាមរាជធានី/ខេត្ត",
 }
@@ -319,8 +393,17 @@ def _soldier_cells(s: Soldier) -> dict:
             "position_name": s.position.name_kh if s.position else ""}
 
 
+def _numbered(rows, start: int = 0):
+    for i, r in enumerate(rows, start=start + 1):
+        r["no"] = i
+        yield r
+
+
 def build_report(db: Session, user: User, key: str, date_from: date | None, date_to: date | None,
-                 unit_id: int | None, kind: str | None, fields: str | None = None) -> dict:
+                 unit_id: int | None, kind: str | None, fields: str | None = None,
+                 page: int | None = None, size: int = 100) -> dict:
+    """page/size: the soldier list shows one page on screen and in print; without a page (Excel) its rows are a
+    stream loaded in batches, so a list of any length never sits in memory at once."""
     if key not in REPORTS:
         raise HTTPException(404, "រកមិនឃើញរបាយការណ៍")
     df = date_from or date(date.today().year, 1, 1)
@@ -338,40 +421,56 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
 
     cols: list[tuple[str, str]]
     rows: list[dict] = []
-    totals = None
+    totals = paging = None
+    first = 0  # number of rows before this page
 
     if key == "strength_by_unit":
-        classes = db.scalars(select(RankClass).order_by(RankClass.sort_order)).all()
-        cols = [("unit", "អង្គភាព")] + [(f"c{c.id}", c.name_kh) for c in classes] + \
-               [("none", "មិនទាន់កំណត់"), ("female", "ស្រី"), ("total", "សរុប")]
-        units = db.scalars(select(Unit).order_by(Unit.path)).all()
+        # kind="rank": one column per rank (ឋានន្តរស័ក្តិ) instead of per rank class
+        by_rank = kind == "rank"
+        if by_rank:
+            groups = [(f"r{r.id}", r.name_kh) for r in db.scalars(select(Rank).order_by(Rank.sort_order.desc()))]
+        else:
+            groups = [(f"c{c.id}", c.name_kh) for c in db.scalars(select(RankClass).order_by(RankClass.sort_order))]
+
+        rank_class = {r.id: r.rank_class_id for r in db.scalars(select(Rank))}
+
+        def group_key(rank_id: int | None) -> str:
+            if not rank_id:
+                return "none"
+            return f"r{rank_id}" if by_rank else f"c{rank_class[rank_id]}"
+
+        cols = [("unit", "អង្គភាព")] + groups + [("none", "មិនទាន់កំណត់"), ("female", "ស្រី"), ("total", "សរុប")]
+        all_units = db.scalars(select(Unit).order_by(Unit.path)).all()
+        paths = {u.id: u.path for u in all_units}
+        units = all_units
         if unit_ids is not None:
             units = [u for u in units if u.id in unit_ids]
         if scope is not None:
             units = [u for u in units if u.id in scope]
-        soldiers = db.scalars(active_soldiers(db, user, unit_id)).unique().all()
+        # one row per unit / rank / gender, counted by the database
+        stmt = select(Soldier.current_unit_id, Soldier.current_rank_id, Soldier.gender, func.count(Soldier.id)) \
+            .select_from(Soldier)
+        grouped = db.execute(active_soldiers(db, user, unit_id, stmt).group_by(
+            Soldier.current_unit_id, Soldier.current_rank_id, Soldier.gender)).all()
         counts = defaultdict(lambda: defaultdict(int))
-        for s in soldiers:
-            path_ids = [int(p) for p in s.unit.path.strip("/").split("/")] if s.unit else []
-            for uid in path_ids:  # count in the unit and all of its parents
-                counts[uid][f"c{s.rank.rank_class_id}" if s.rank else "none"] += 1
-                counts[uid]["female"] += s.gender == "F"
-                counts[uid]["total"] += 1
+        totals = {"unit": "សរុបរួម", **{k: 0 for k, _ in cols[1:]}}
+        for soldier_unit, rank_id, gender, n in grouped:
+            path_ids = [int(p) for p in paths[soldier_unit].strip("/").split("/")] if soldier_unit in paths else []
+            for target in [*(counts[uid] for uid in path_ids), totals]:  # the unit, all of its parents, the total
+                target[group_key(rank_id)] += n
+                target["female"] += n if gender == "F" else 0
+                target["total"] += n
         for u in units:
             rows.append({"unit": ("　" * (u.level - 1)) + u.name_kh, "_level": u.level,
                          **{k: counts[u.id].get(k, 0) for k, _ in cols[1:]}})
-        totals = {"unit": "សរុបរួម", **{k: 0 for k, _ in cols[1:]}}
-        for s in soldiers:
-            totals[f"c{s.rank.rank_class_id}" if s.rank else "none"] += 1
-            totals["female"] += s.gender == "F"
-            totals["total"] += 1
 
     elif key == "strength_by_rank":
         cols = [("rank_class", "ថ្នាក់"), ("rank", "ឋានន្តរស័ក្តិ"), ("male", "ប្រុស"), ("female", "ស្រី"), ("total", "សរុប")]
-        soldiers = db.scalars(active_soldiers(db, user, unit_id)).unique().all()
+        stmt = select(Soldier.current_rank_id, Soldier.gender, func.count(Soldier.id)).select_from(Soldier)
         c = defaultdict(lambda: {"male": 0, "female": 0})
-        for s in soldiers:
-            c[s.current_rank_id]["female" if s.gender == "F" else "male"] += 1
+        for rank_id, gender, n in db.execute(active_soldiers(db, user, unit_id, stmt).group_by(
+                Soldier.current_rank_id, Soldier.gender)):
+            c[rank_id]["female" if gender == "F" else "male"] += n
         for r in db.scalars(select(Rank).order_by(Rank.sort_order.desc())):
             v = c.get(r.id, {"male": 0, "female": 0})
             rows.append({"rank_class": r.rank_class.name_kh, "rank": r.name_kh, **v, "total": v["male"] + v["female"]})
@@ -384,12 +483,22 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
     elif key == "soldier_list":
         chosen = [f for f in (fields or "").split(",") if f in SOLDIER_FIELDS] or DEFAULT_SOLDIER_FIELDS
         cols = [(f, SOLDIER_FIELDS[f]) for f in chosen]
-        stmt = active_soldiers(db, user, unit_id).outerjoin(Rank, Rank.id == Soldier.current_rank_id) \
-            .order_by(Rank.sort_order.desc(), Soldier.name_kh)
-        for s in db.scalars(stmt).unique():
+        stmt = active_soldiers(db, user, unit_id).order_by(Soldier.rank_sort.desc(), Soldier.name_kh)
+        if page:
+            soldiers, total = paginate(db, stmt, page, size)
+            paging, first = {"page": page, "size": size, "total": total}, (page - 1) * size
+        else:
+            total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+            if total > MAX_EXPORT_ROWS:
+                raise HTTPException(400, f"ទិន្នន័យច្រើនពេកសម្រាប់ Excel ({total:,} ជួរ; អតិបរមា {MAX_EXPORT_ROWS:,})"
+                                         " — សូមជ្រើសរើសអង្គភាព")
+            soldiers = in_batches(db, stmt)
+
+        def list_row(s: Soldier) -> dict:
             d = soldier_summary(s)
             d["gender"] = "ប្រុស" if s.gender == "M" else "ស្រី"
-            rows.append(d)
+            return d
+        rows = (list_row(s) for s in soldiers)
 
     elif key == "movements":
         cols = [("movement_date", "កាលបរិច្ឆេទ"), ("direction", "កើន/ថយ"), ("reason", "មូលហេតុ")] + SOLDIER_COLS + \
@@ -452,7 +561,7 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
     elif key == "training":
         cols = [("course", "វគ្គ"), ("course_type", "ប្រភេទ"), ("level", "កម្រិត"), ("where", "ក្នុង/ក្រៅប្រទេស"),
                 ("start_date", "ចាប់ពី"), ("end_date", "ដល់")] + SOLDIER_COLS + [("participant_status", "ស្ថានភាព"), ("result", "លទ្ធផល")]
-        cambodia = db.scalar(select(Country.id).where(Country.name_en == "Cambodia"))
+        cambodia = set(db.scalars(CAMBODIA_IDS))
         stmt = select(TrainingCourse, TrainingParticipant).join(
             TrainingParticipant, TrainingParticipant.course_id == TrainingCourse.id).where(
             TrainingCourse.deleted_at.is_(None), TrainingCourse.start_date.between(df, dt), *soldier_in_scope(TrainingParticipant))
@@ -461,13 +570,13 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
         for c, p in db.execute(stmt.order_by(TrainingCourse.start_date)).unique():
             rows.append({"course": c.name, "course_type": "រយៈពេលវែង" if c.course_type == "long" else "រយៈពេលខ្លី",
                          "level": "វគ្គបំប៉ន" if c.level == "refresher" else "វគ្គបណ្ដុះបណ្ដាល",
-                         "where": "ក្រៅប្រទេស" if c.country_id and c.country_id != cambodia else "ក្នុងប្រទេស",
+                         "where": "ក្រៅប្រទេស" if c.country_id and c.country_id not in cambodia else "ក្នុងប្រទេស",
                          "start_date": c.start_date.isoformat() if c.start_date else "",
                          "end_date": c.end_date.isoformat() if c.end_date else "",
                          **_soldier_cells(p.soldier), "result": p.result or "",
                          "participant_status": PARTICIPANT_STATUS.get(p.status, "")})
 
-    elif key in ("discipline", "awards", "retirement", "separation"):
+    elif key in ("discipline", "awards", "retirement", "category2", "separation"):
         model, date_col, extra = {
             "discipline": (DisciplineRecord, DisciplineRecord.decision_date,
                            [("type", "ប្រភេទទណ្ឌកម្ម"), ("level", "កម្រិត"), ("reason", "មូលហេតុ"),
@@ -477,12 +586,15 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
             "retirement": (RetirementRecord, RetirementRecord.effective_date, [("type", "ប្រភេទ"),
                                                                               ("status", "ស្ថានភាពសំណុំរឿង"),
                                                                               ("notes", "កំណត់សម្គាល់")]),
+            "category2": (Category2Record, Category2Record.effective_date, [("type", "ប្រភេទ"), ("notes", "កំណត់សម្គាល់")]),
             "separation": (SeparationRecord, SeparationRecord.effective_date, [("type", "មូលហេតុ"), ("notes", "កំណត់សម្គាល់")]),
         }[key]
         cols = [("decision_no", "លេខលិខិត"), ("date", "កាលបរិច្ឆេទ")] + SOLDIER_COLS + [("unit_name", "អង្គភាព")] + extra
         stmt = select(model).where(model.deleted_at.is_(None), date_col.between(df, dt), *soldier_in_scope(model))
-        if key == "retirement" and kind:  # pension / voluntary / category2
+        if key == "retirement" and kind:  # pension / voluntary
             stmt = stmt.where(RetirementRecord.type == kind)
+        if key == "category2" and kind:  # fallen / fallen_dead / disabled
+            stmt = stmt.where(Category2Record.type == kind)
         for r in db.scalars(stmt.order_by(date_col)).unique():
             status = ""
             if key == "discipline":
@@ -493,6 +605,8 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
             elif key == "retirement":
                 t = RETIREMENT_TYPES.get(r.type, r.type)
                 status = CASE_STATUS.get(r.case_status, "")
+            elif key == "category2":
+                t = CATEGORY2_TYPES.get(r.type, "មិនទាន់កំណត់")
             else:
                 t = r.reason.name_kh if r.reason else ""
             dval = getattr(r, date_col.key)
@@ -513,13 +627,14 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
                 rows.append(row)
         totals = {"province": "សរុប", **{k: sum(r[k] for r in rows) for k, _ in cols[1:]}}
 
-    for i, r in enumerate(rows, start=1):
-        r["no"] = i
+    rows = _numbered(rows, first)
+    if not (key == "soldier_list" and not page):
+        rows = list(rows)
     cols = [("no", "ល.រ")] + cols
     return {"key": key, "title": REPORTS[key], "date_from": df.isoformat(), "date_to": dt.isoformat(),
             "available_fields": [{"key": k, "label": v} for k, v in SOLDIER_FIELDS.items()] if key == "soldier_list" else None,
             "columns": [{"key": k, "label": lbl} for k, lbl in cols], "rows": rows, "totals": totals,
-            "org_name": get_setting(db, "org_name_kh")}
+            "paging": paging, "org_name": get_setting(db, "org_name_kh")}
 
 
 @router.get("/reports")
@@ -530,32 +645,37 @@ def report_catalog(_: User = Depends(require("reports", "view"))):
 @router.get("/reports/{key}")
 def run_report(key: str, date_from: date | None = None, date_to: date | None = None, unit_id: int | None = None,
                kind: str | None = None, fields: str | None = None, format: str = Query("json", pattern="^(json|xlsx)$"),
+               page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
                db: Session = Depends(get_db), user: User = Depends(require("reports", "view"))):
     if format == "xlsx" and not user.can("reports", "export"):
         raise HTTPException(403, "គ្មានសិទ្ធិនាំចេញ")
-    rep = build_report(db, user, key, date_from, date_to, unit_id, kind, fields)
+    # the Excel file has every row (page=None); the screen and print get one page
+    rep = build_report(db, user, key, date_from, date_to, unit_id, kind, fields,
+                       page=page if format == "json" else None, size=size)
     if format == "json":
         return rep
-    wb = Workbook()
-    ws = wb.active
-    ws.title = key[:30]
+    # write-only: rows go straight to the file (the soldier list's rows are streamed from the database)
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(key[:30])
     ncol = len(rep["columns"])
-    ws.append([rep["title"]])
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncol)
-    ws["A1"].font = Font(bold=True, size=14)
-    ws["A1"].alignment = Alignment(horizontal="center")
+    for i in range(ncol):
+        ws.column_dimensions[get_column_letter(i + 1)].width = 20
+
+    def styled(value, **font):
+        c = WriteOnlyCell(ws, value=value)
+        c.font = Font(bold=True, **font)
+        return c
+
+    title = styled(rep["title"], size=14)
+    title.alignment = Alignment(horizontal="center")
+    ws.append([title])
+    ws.merged_cells.add(f"A1:{get_column_letter(ncol)}1")
     ws.append([f"ចាប់ពី {rep['date_from']} ដល់ {rep['date_to']}"])
-    ws.append([c["label"] for c in rep["columns"]])
-    for c in ws[3]:
-        c.font = Font(bold=True)
+    ws.append([styled(c["label"]) for c in rep["columns"]])
     for r in rep["rows"]:
         ws.append([r.get(c["key"], "") for c in rep["columns"]])
     if rep["totals"]:
-        ws.append([rep["totals"].get(c["key"], "") for c in rep["columns"]])
-        for c in ws[ws.max_row]:
-            c.font = Font(bold=True)
-    for col in ws.iter_cols(min_row=3, max_row=3):
-        ws.column_dimensions[col[0].column_letter].width = 20
+        ws.append([styled(rep["totals"].get(c["key"], "")) for c in rep["columns"]])
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)

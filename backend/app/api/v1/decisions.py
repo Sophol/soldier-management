@@ -10,7 +10,7 @@ history + strength movements. Cancelling an approved decision reverts it (only i
 changed the soldier since).
 """
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, or_, select
@@ -33,9 +33,11 @@ from app.models import (
     Decision,
     DecisionItem,
     DecisionStep,
+    DisciplineRecord,
     DocumentIncoming,
     DocumentOutgoing,
     DocumentType,
+    Lookup,
     Position,
     Rank,
     Soldier,
@@ -45,9 +47,9 @@ from app.models import (
     User,
 )
 from app.models.decision import DECISION_KINDS
-from app.schemas import ApproveIn, DecisionIn, WorkflowStepIn
+from app.schemas import ApproveIn, DecisionCheckIn, DecisionIn, WorkflowStepIn
 from app.services.common import audit, names_by_id, paginate, scope_unit_ids, to_dict, unit_subtree_ids
-from app.services.soldier import add_history, add_movement, diff_ym, is_inactive, years_to_next_rank
+from app.services.soldier import add_history, add_movement, diff_ym, is_inactive, unit_chain, years_to_next_rank
 from app.services.staffing import staffing_problems
 
 router = APIRouter(prefix="/decisions", tags=["decisions"])
@@ -100,7 +102,11 @@ def decision_out(db: Session, d: Decision, with_items: bool = True, user: User |
            "incoming_no": db.scalar(select(DocumentIncoming.incoming_no).where(
                DocumentIncoming.id == d.incoming_document_id)) if d.incoming_document_id else None,
            "outgoing_no": db.scalar(select(DocumentOutgoing.outgoing_no).where(
-               DocumentOutgoing.id == d.outgoing_document_id)) if d.outgoing_document_id else None}
+               DocumentOutgoing.id == d.outgoing_document_id)) if d.outgoing_document_id else None,
+           "institutions": sorted({n for i in d.items for n in (institution_name(db, i.old_unit_id),
+                                                                 institution_name(db, i.new_unit_id)) if n}),
+           # checked only while the decision can still change something: once approved the soldier has moved on
+           "anomalies": decision_anomalies(db, d) if d.status == "draft" or d.status in IN_PROGRESS else []}
     if with_items:
         ranks = names_by_id(db, Rank, [i.old_rank_id for i in d.items] + [i.new_rank_id for i in d.items])
         poss = names_by_id(db, Position, [i.old_position_id for i in d.items] + [i.new_position_id for i in d.items])
@@ -113,10 +119,109 @@ def decision_out(db: Session, d: Decision, with_items: bool = True, user: User |
             "old_rank": ranks.get(i.old_rank_id), "new_rank": ranks.get(i.new_rank_id),
             "old_position": poss.get(i.old_position_id), "new_position": poss.get(i.new_position_id),
             "old_unit": units.get(i.old_unit_id), "new_unit": units.get(i.new_unit_id),
+            "old_institution": institution_name(db, i.old_unit_id), "new_institution": institution_name(db, i.new_unit_id),
         } for i in d.items]
         out["steps"] = [{**to_dict(st), "user_name": st.user.full_name if st.user else None,
                          "from_name": STATUS_NAMES.get(st.from_status), "to_name": STATUS_NAMES.get(st.to_status)}
                         for st in d.steps]
+    return out
+
+
+def institution_name(db: Session, unit_id: int | None) -> str | None:
+    """The ស្ថាប័នកងឯកភាព (top-level unit) a unit belongs to."""
+    chain = unit_chain(db.get(Unit, unit_id)) if unit_id else []
+    return chain[0].name_kh if chain else None
+
+
+def _add_years(d: date, years: int) -> date:
+    try:
+        return d.replace(year=d.year + years)
+    except ValueError:  # 29 February
+        return d.replace(year=d.year + years, day=28)
+
+
+RECENT_MONTHS = 12  # a new appointment / transfer within this time of the last one is flagged
+
+
+def _months(start: date, end: date) -> int:
+    years, months = diff_ym(start, end)
+    return years * 12 + months
+
+
+def anomalies(db: Session, kind: str, decision_date: date | None, effective_date: date | None, s: Soldier,
+              new_rank_id: int | None, new_position_id: int | None, new_unit_id: int | None,
+              decision_id: int | None = None) -> list[str]:
+    """Unusual facts (ព័ត៌មានខុសប្រក្រតី) about one soldier line: shown as warnings, they never block saving or
+    approval. Hard rules (staffing table, higher rank only, ...) are errors in _check_change/_check_staffing."""
+    from app.api.v1.reports import retirement_age  # reports imports this module
+
+    label = f"{s.name_kh} ({s.military_id})"
+    out = []
+    when = effective_date or date.today()
+    if new_rank_id:
+        need = years_to_next_rank(s)
+        if not s.rank_date:
+            out.append("មិនមានថ្ងៃឡើងស័ក្តិចុងក្រោយ (មិនអាចពិនិត្យរយៈពេលឡើងស័ក្តិ)")
+        elif need:
+            ym = diff_ym(s.rank_date, when)
+            if ym is None or ym[0] < need:
+                out.append(f"រយៈពេលឡើងស័ក្តិមិនទាន់គ្រប់ {need} ឆ្នាំ")
+        cur, new = s.rank, db.get(Rank, new_rank_id)
+        if cur and new and new.sort_order > cur.sort_order:
+            skipped = [r.name_kh for r in db.scalars(select(Rank).where(
+                Rank.active.is_(True), Rank.sort_order > cur.sort_order, Rank.sort_order < new.sort_order).order_by(Rank.sort_order))
+                if "all" in (r.branch, cur.branch) or r.branch == cur.branch]
+            if skipped:
+                out.append(f"ដំឡើងរំលង {len(skipped)} ថ្នាក់ ({', '.join(skipped)})")
+    if new_position_id and new_position_id == s.current_position_id:
+        out.append("មុខតំណែងថ្មី ដូចមុខតំណែងបច្ចុប្បន្ន")
+    elif new_position_id and s.position_date and _months(s.position_date, when) < RECENT_MONTHS:
+        out.append(f"ទើបតែតែងតាំងមុខតំណែងបច្ចុប្បន្ន មិនទាន់គ្រប់ {RECENT_MONTHS} ខែ")
+    if new_unit_id and new_unit_id == s.current_unit_id:
+        out.append("អង្គភាពថ្មី ដូចអង្គភាពបច្ចុប្បន្ន")
+    elif new_unit_id and s.unit_transfer_date and _months(s.unit_transfer_date, when) < RECENT_MONTHS:
+        out.append(f"ទើបតែផ្លាស់មកអង្គភាពបច្ចុប្បន្ន មិនទាន់គ្រប់ {RECENT_MONTHS} ខែ")
+    if new_unit_id and s.current_unit_id and new_unit_id != s.current_unit_id \
+            and institution_name(db, new_unit_id) != institution_name(db, s.current_unit_id):
+        out.append(f"ផ្លាស់ប្ដូរចេញពីស្ថាប័នកងឯកភាព {institution_name(db, s.current_unit_id)} "
+                   f"ទៅ {institution_name(db, new_unit_id)}")
+    status = db.scalar(select(Lookup.code).where(Lookup.id == s.status_id)) if s.status_id else None
+    if status in ("suspended", "studying"):
+        out.append("ស្ថានភាព: " + ("ព្យួរការងារ" if status == "suspended" else "កំពុងសិក្សា"))
+    punished = db.scalars(select(DisciplineRecord).where(
+        DisciplineRecord.soldier_id == s.id, DisciplineRecord.deleted_at.is_(None), DisciplineRecord.cancelled.is_(False),
+        or_(DisciplineRecord.end_date.is_(None), DisciplineRecord.end_date >= when))).all()
+    if punished:
+        out.append(f"កំពុងស្ថិតក្រោមទណ្ឌកម្មវិន័យ ({len(punished)})")
+    if s.date_of_birth:
+        by_gender = {"M": int(get_setting(db, "retirement_age_male", "60") or 60),
+                     "F": int(get_setting(db, "retirement_age_female", "55") or 55)}
+        retire_on = _add_years(s.date_of_birth, retirement_age(s, by_gender))
+        if retire_on <= when:
+            out.append(f"ហួសអាយុចូលនិវត្តន៍ (ថ្ងៃ {retire_on:%d/%m/%Y})")
+        elif retire_on <= _add_years(when, 1):
+            out.append(f"ជិតដល់អាយុចូលនិវត្តន៍ (ថ្ងៃ {retire_on:%d/%m/%Y})")
+    if s.enlistment_date and effective_date and effective_date < s.enlistment_date:
+        out.append("ថ្ងៃចូលជាធរមាន មុនថ្ងៃចូលបម្រើទ័ព")
+    others = db.scalars(select(Decision.decision_no).join(DecisionItem).where(
+        DecisionItem.soldier_id == s.id, Decision.deleted_at.is_(None), Decision.id != (decision_id or 0),
+        Decision.status.in_(("draft", *IN_PROGRESS)))).all()
+    if others:
+        out.append(f"មាននៅក្នុងសេចក្ដីសម្រេចផ្សេងទៀតដែលកំពុងដំណើរការ ({len(others)})")
+    return [f"{label}: {m}" for m in out]
+
+
+def decision_level_anomalies(decision_date: date | None, effective_date: date | None) -> list[str]:
+    if decision_date and effective_date and effective_date < decision_date:
+        return ["ថ្ងៃចូលជាធរមាន មុនថ្ងៃចុះសេចក្ដីសម្រេច"]
+    return []
+
+
+def decision_anomalies(db: Session, d: Decision) -> list[str]:
+    out = decision_level_anomalies(d.decision_date, d.effective_date)
+    for i in d.items:
+        out += anomalies(db, d.kind, d.decision_date, d.effective_date, i.soldier, i.new_rank_id,
+                         i.new_position_id, i.new_unit_id, d.id)
     return out
 
 
@@ -185,8 +290,10 @@ def _check_staffing(db: Session, kind: str, changes: list[tuple]) -> None:
         raise HTTPException(400, "មិនស្របនឹងក្របខណ្ឌ៖\n" + "\n".join(problems))
 
 
-def _validate_items(db: Session, user: User, payload: DecisionIn) -> tuple[list[DecisionItem], list[str]]:
-    items, warnings, seen, changes = [], [], set(), []
+def _validate_items(db: Session, user: User, payload: DecisionIn,
+                    decision_id: int | None = None) -> tuple[list[DecisionItem], list[str]]:
+    items, seen, changes = [], set(), []
+    warnings = decision_level_anomalies(payload.decision_date, payload.effective_date)
     scope = scope_unit_ids(db, user)
     for it in payload.items:
         if it.soldier_id in seen:
@@ -205,11 +312,8 @@ def _validate_items(db: Session, user: User, payload: DecisionIn) -> tuple[list[
             raise HTTPException(400, f"{label}: សូមជ្រើសរើសមុខតំណែងថ្មី")
         if payload.kind == "transfer" and not (it.new_unit_id or it.new_position_id or new_rank_id):
             raise HTTPException(400, f"{label}: សូមជ្រើសរើសអង្គភាព មុខតំណែង ឬឋានន្តរស័ក្តិថ្មី")
-        need = years_to_next_rank(s)
-        if new_rank_id and need:
-            ym = diff_ym(s.rank_date, payload.effective_date)
-            if ym is None or ym[0] < need:
-                warnings.append(f"{label}: រយៈពេលឡើងស័ក្តិមិនទាន់គ្រប់ {need} ឆ្នាំ")
+        warnings += anomalies(db, payload.kind, payload.decision_date, payload.effective_date, s, new_rank_id,
+                              it.new_position_id, it.new_unit_id, decision_id)
         _check_change(db, s, payload.kind, new_rank_id, it.new_position_id, it.new_unit_id, label)
         changes.append((s, new_rank_id, it.new_position_id, it.new_unit_id, label))
         items.append(DecisionItem(
@@ -228,7 +332,7 @@ def list_decisions(request: Request, kind: str, page: int = Query(1, ge=1), size
                    waiting: bool = False, overdue: bool = False,
                    old_rank_id: int | None = None, new_rank_id: int | None = None, old_position_id: int | None = None,
                    new_position_id: int | None = None, old_unit_id: int | None = None, new_unit_id: int | None = None,
-                   db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+                   institution_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """waiting=true: only decisions waiting at a step this user can act on (their inbox); overdue=true: still in the
     workflow and waiting at one step for too long. old_/new_ rank, position, unit: any soldier of the decision
     (units include their sub-units). created_by = the submitter (អ្នកដាក់សំណើ)."""
@@ -263,6 +367,10 @@ def list_decisions(request: Request, kind: str, page: int = Query(1, ge=1), size
                                                                    (DecisionItem.new_unit_id, new_unit_id)) if val]
     if conds:  # all on the same soldier line (e.g. from this rank to that rank)
         stmt = stmt.where(Decision.id.in_(select(DecisionItem.decision_id).where(*conds)))
+    if institution_id:  # a soldier coming from or going to this ស្ថាប័នកងឯកភាព
+        inst = unit_subtree_ids(db, institution_id)
+        stmt = stmt.where(Decision.id.in_(select(DecisionItem.decision_id).where(
+            or_(DecisionItem.old_unit_id.in_(inst), DecisionItem.new_unit_id.in_(inst)))))
     stmt = audit_filters(stmt, Decision, request.query_params)
     items, total = paginate(db, stmt.order_by(Decision.decision_date.desc(), Decision.id.desc()), page, size)
     cutoff = overdue_cutoff(db)
@@ -285,6 +393,21 @@ def get_decision(decision_id: int, db: Session = Depends(get_db), user: User = D
     if visible is not None and not db.scalar(select(Decision.id).where(Decision.id == d.id, visible)):
         raise HTTPException(403, "សេចក្ដីសម្រេចនេះនៅក្រៅសិទ្ធិរបស់អ្នក")
     return decision_out(db, d, user=user)
+
+
+@router.post("/check")
+def check_decision(payload: DecisionCheckIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Anomalies of a decision being typed (nothing is saved), so the form can show them before saving."""
+    _need(user, payload.kind, "view")
+    out = decision_level_anomalies(payload.decision_date, payload.effective_date)
+    for it in payload.items:
+        s = db.get(Soldier, it.soldier_id)
+        if not s or s.deleted_at:
+            continue
+        new_rank_id = it.new_rank_id if payload.kind in ("promote", "transfer") else None
+        out += anomalies(db, payload.kind, payload.decision_date, payload.effective_date, s, new_rank_id,
+                         it.new_position_id, it.new_unit_id, payload.id)
+    return {"warnings": out}
 
 
 @router.post("", status_code=201)
@@ -312,7 +435,7 @@ def update_decision(decision_id: int, payload: DecisionIn, request: Request, db:
         raise HTTPException(400, "អាចកែប្រែបានតែសេចក្ដីសម្រេចព្រាងប៉ុណ្ណោះ")
     if payload.kind != d.kind:
         raise HTTPException(400, "មិនអាចប្ដូរប្រភេទសេចក្ដីសម្រេចបានទេ")
-    items, warnings = _validate_items(db, user, payload)
+    items, warnings = _validate_items(db, user, payload, d.id)
     before = to_dict(d)
     data = payload.model_dump(exclude={"items", "kind"})
     for link in ("outgoing_document_id", "incoming_document_id"):

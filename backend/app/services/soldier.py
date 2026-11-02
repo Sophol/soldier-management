@@ -1,9 +1,34 @@
+import re
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Lookup, Soldier, SoldierHistory, StrengthMovement
+from app.models import Category2Record, Lookup, RetirementRecord, SeparationRecord, Soldier, SoldierHistory, StrengthMovement
+
+
+MILITARY_ID_DIGITS = 6  # អត្តលេខ is shown with 6 digits: 652 -> 000652
+KH_DIGITS = str.maketrans("០១២៣៤៥៦៧៨៩", "0123456789")
+
+
+def format_military_id(value: str | None) -> str | None:
+    """A numeric military ID padded with leading zeros to 6 digits (Khmer digits read as 0-9);
+    any other ID is kept as it is."""
+    if value is None:
+        return None
+    v = str(value).strip()
+    digits = v.translate(KH_DIGITS)
+    return digits.zfill(MILITARY_ID_DIGITS) if re.fullmatch(r"[0-9]+", digits) else v
+
+
+BIRTH_AFTER_ENLISTMENT = "ថ្ងៃខែឆ្នាំកំណើត ត្រូវតែមុនថ្ងៃខែឆ្នាំបម្រើចូលទ័ព"
+
+
+def dates_error(date_of_birth: date | None, enlistment_date: date | None) -> str | None:
+    """A soldier must be born before enlisting (a typo in either year shows up here)."""
+    if date_of_birth and enlistment_date and date_of_birth >= enlistment_date:
+        return BIRTH_AFTER_ENLISTMENT
+    return None
 
 
 def diff_ym(start: date | None, end: date | None = None) -> tuple[int, int] | None:
@@ -110,7 +135,39 @@ INACTIVE_STATUS_CODES = ("retired", "category2", "separated", "deceased")
 def is_inactive(db: Session, s: Soldier) -> bool:
     """True when the soldier has left the strength (read by id: the cached relationship may be stale)."""
     code = db.scalar(select(Lookup.code).where(Lookup.id == s.status_id)) if s.status_id else None
-    return code in INACTIVE_STATUS_CODES
+    return code in INACTIVE_STATUS_CODES or any(_has_record(db, m, s) for m in (SeparationRecord, Category2Record,
+                                                                               RetirementRecord))
+
+
+# soldiers are counted out by their records, not by status (which depends on the soldier_status lookups):
+# a separated soldier (យោធិនចេញពីជួរ) is removed from the soldier register entirely (only the separation list
+# shows them; their profile and history are kept read-only); a category-2 soldier (យោធិនប្រភេទ២) stays in
+# the list but is no longer in the serving strength, and so does a retired soldier (ការងារសោធននិវត្តន៍).
+def _live_ids(model):
+    return select(model.soldier_id).where(model.deleted_at.is_(None))
+
+
+def not_separated():
+    """Condition on Soldier: not separated from the ranks."""
+    return Soldier.id.not_in(_live_ids(SeparationRecord))
+
+
+def not_category2():
+    """Condition on Soldier: not a category-2 soldier."""
+    return Soldier.id.not_in(_live_ids(Category2Record))
+
+
+def not_retired():
+    """Condition on Soldier: not retired (no retirement record)."""
+    return Soldier.id.not_in(_live_ids(RetirementRecord))
+
+
+def _has_record(db: Session, model, s: Soldier) -> bool:
+    return db.scalar(select(func.count()).select_from(_live_ids(model).where(model.soldier_id == s.id).subquery())) > 0
+
+
+def is_separated(db: Session, s: Soldier) -> bool:
+    return _has_record(db, SeparationRecord, s)
 
 
 def add_history(db: Session, soldier: Soldier, kind: str, effective_date: date | None, *,

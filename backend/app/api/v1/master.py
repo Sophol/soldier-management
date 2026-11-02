@@ -42,6 +42,7 @@ from app.schemas import (
     VillageIn,
 )
 from app.services.common import to_dict
+from app.services.soldier import not_separated
 from app.services.staffing import filled_by_rank, filled_by_unit_position, filled_column
 
 router = APIRouter()
@@ -101,7 +102,7 @@ def unit_tree(active_only: bool = False, db: Session = Depends(get_db), user: Us
         stmt = stmt.where(Unit.path.like(f"{scope.path}%"))
     units = db.scalars(stmt).all()
     counts = dict(db.execute(
-        select(Soldier.current_unit_id, func.count()).where(Soldier.deleted_at.is_(None))
+        select(Soldier.current_unit_id, func.count()).where(Soldier.deleted_at.is_(None), not_separated())
         .group_by(Soldier.current_unit_id)
     ).all())
     nodes = {u.id: {**to_dict(u), "level_name": UNIT_LEVELS.get(u.level),

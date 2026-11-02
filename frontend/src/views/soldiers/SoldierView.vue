@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
 import { useAuth } from '@/stores/auth'
@@ -11,6 +11,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuth()
 const s = ref(null)
+const separated = computed(() => !!s.value?.separated)
 const tab = ref('info')
 const KIND = { initial: 'ទិន្នន័យដំបូង', appoint: 'តែងតាំង', transfer: 'ផ្លាស់ប្ដូរ', promote: 'ដំឡើងស័ក្តិ', correction: 'កែតម្រូវ' }
 const KIND_TYPE = { initial: 'info', appoint: 'primary', transfer: 'warning', promote: 'success', correction: 'danger' }
@@ -29,11 +30,15 @@ const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))
     <div class="page-head">
       <h2>ប្រវត្តិរូបយោធិន</h2>
       <div class="head-actions">
-        <el-button icon="Back" @click="router.push('/soldiers')">បញ្ជីយោធិន</el-button>
+        <el-button v-if="separated" icon="Back" @click="router.push('/separation')">យោធិនចេញពីជួរ</el-button>
+        <el-button v-else icon="Back" @click="router.push('/soldiers')">បញ្ជីយោធិន</el-button>
         <el-button v-if="auth.can('soldiers.print')" icon="Printer" @click="router.push(`/soldiers/${s.id}/print`)">បោះពុម្ព A4</el-button>
-        <el-button v-if="auth.can('soldiers.update')" type="primary" icon="Edit" @click="router.push(`/soldiers/${s.id}/edit`)">កែប្រែ</el-button>
+        <el-button v-if="auth.can('soldiers.update') && !separated" type="primary" icon="Edit" @click="router.push(`/soldiers/${s.id}/edit`)">កែប្រែ</el-button>
       </div>
     </div>
+
+    <el-alert v-if="separated" type="warning" show-icon :closable="false" class="separated-note"
+              title="យោធិននេះបានចេញពីជួរ — មិនមានក្នុងបញ្ជីយោធិនទៀតទេ។ ប្រវត្តិរូបត្រូវបានរក្សាទុកសម្រាប់មើលតែប៉ុណ្ណោះ។" />
 
     <el-card shadow="never">
       <div class="header">
@@ -150,7 +155,7 @@ const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))
 
         <el-tab-pane label="ឯកសារភ្ជាប់" name="files" lazy>
           <FileAttachments owner-type="soldier" :owner-id="s.id" :base-url="`/soldiers/${s.id}/attachments`"
-                           :editable="auth.can('soldiers.update')" />
+                           :editable="auth.can('soldiers.update') && !separated" />
         </el-tab-pane>
       </el-tabs>
     </el-card>
@@ -158,6 +163,7 @@ const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))
 </template>
 
 <style scoped>
+.separated-note { margin-bottom: 12px; }
 .header { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
 .photo { width: 110px; height: 146px; border-radius: 6px; overflow: hidden; border: 1px solid #e1e6ea; }
 .photo :deep(img) { width: 100%; height: 100%; object-fit: cover; }

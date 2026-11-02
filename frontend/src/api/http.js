@@ -67,7 +67,8 @@ export function errorMessage(error) {
 
 /** Download a protected file (Bearer token) and save it with its server-side name. */
 export async function download(url, params = {}, fallbackName = 'download') {
-  const res = await http.get(url, { params, responseType: 'blob' })
+  // a large Excel export takes minutes to build: no 60 s limit here (nginx allows these paths 15 minutes)
+  const res = await http.get(url, { params, responseType: 'blob', timeout: 15 * 60 * 1000 })
   const cd = res.headers['content-disposition'] || ''
   const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd)
   const name = m ? decodeURIComponent(m[1]) : fallbackName

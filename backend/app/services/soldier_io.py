@@ -9,12 +9,14 @@ from io import BytesIO
 
 from fastapi import HTTPException
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Lookup, Position, Rank, Soldier, Specialty, Unit
-from app.services.soldier import unit_chain
+from app.services.soldier import dates_error, format_military_id, is_separated, not_separated, unit_chain
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,10 @@ class Resolver:
         for lk in db.scalars(select(Lookup)):
             self.lookups.setdefault(lk.category, []).append(lk)
         self.unit_path = {u.id: " › ".join(x.name_kh for x in unit_chain(u)) for u in self.units}
+        # {(field kind, id): name} for display(), which an export calls for every cell
+        self.names = {(kind, x.id): x.name_kh for kind, pool in
+                      (("rank", self.ranks), ("position", self.positions), ("specialty", self.specialties)) for x in pool}
+        self.names.update({(f"lookup:{cat}", lk.id): lk.name_kh for cat, items in self.lookups.items() for lk in items})
 
     @staticmethod
     def _one(matches: list, value: str, what: str):
@@ -164,11 +170,8 @@ class Resolver:
             return "ប្រតិបត្តិការសឹក" if value == "combat" else "សេវារដ្ឋបាល"
         if f.kind == "unit":
             return self.unit_path.get(value, "")
-        pools = {"rank": self.ranks, "position": self.positions, "specialty": self.specialties}
-        if f.kind in pools:
-            return next((x.name_kh for x in pools[f.kind] if x.id == value), "")
-        if f.kind.startswith("lookup:"):
-            return next((x.name_kh for x in self.lookups.get(f.kind[7:], []) if x.id == value), "")
+        if f.kind in ("rank", "position", "specialty") or f.kind.startswith("lookup:"):
+            return self.names.get((f.kind, value), "")
         return str(value)
 
 
@@ -261,10 +264,26 @@ EXTRA_EXPORT = [("age", "អាយុ"), ("service_length", "រយៈពេល�
                 ("time_in_position", "រយៈពេលមុខតំណែង"), ("institution_name", "ចំណុះស្ថាប័នកងឯកភាព")]
 
 
+MAX_EXPORT_ROWS = 1_048_575  # Excel's sheet limit, less the header row
+
+
 def export(db: Session, soldiers, summary) -> BytesIO:
-    """The import columns (so the file can be imported/compared again) followed by computed columns."""
+    """The import columns (so the file can be imported/compared again) followed by computed columns.
+    Write-only workbook: rows go straight to the file, so `soldiers` can be a stream of any size."""
     r = Resolver(db)
-    wb, ws = _book("យោធិន", FIELDS + [Field(k, label, "text") for k, label in EXTRA_EXPORT])
+    fields = FIELDS + [Field(k, label, "text") for k, label in EXTRA_EXPORT]
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("យោធិន")
+    for i in range(len(fields)):
+        ws.column_dimensions[get_column_letter(i + 1)].width = 22
+    ws.freeze_panes = "A2"
+    header = []
+    for f in fields:
+        c = WriteOnlyCell(ws, value=f"{f.label} *" if f.required else f.label)
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor="E8F0EC")
+        header.append(c)
+    ws.append(header)
     for s in soldiers:
         d = summary(s)
         ws.append([r.display(f, getattr(s, f.key)) for f in FIELDS] + [d.get(k) for k, _ in EXTRA_EXPORT])
@@ -286,7 +305,9 @@ def parse_rows(db: Session, data: list[tuple[int, dict]], fields: list[Field]) -
                 invalid.add(f.key)
             elif v is not None:
                 values[f.key] = v
-        mid = values.get("military_id")
+        mid = format_military_id(values.get("military_id"))
+        if mid:
+            values["military_id"] = mid
         if not mid:
             errors.append("ខ្វះអត្តលេខ")
         elif mid in seen_mid:
@@ -298,6 +319,9 @@ def parse_rows(db: Session, data: list[tuple[int, dict]], fields: list[Field]) -
             errors.append(f"លេខអត្តសញ្ញាណប័ណ្ណស្ទួនក្នុងឯកសារ (ជួរ {seen_nid[nid]})")
         elif nid:
             seen_nid[nid] = n
+        if err := dates_error(values.get("date_of_birth"), values.get("enlistment_date")):
+            errors.append(err)
+            invalid.update(("date_of_birth", "enlistment_date"))
         out.append({"row": n, "values": values, "errors": errors, "invalid": invalid})
     return out
 
@@ -316,6 +340,8 @@ def plan_import(db: Session, rows: list[dict], update_existing: bool, scope: lis
         if s is not None:
             if s.deleted_at:
                 errs.append("អត្តលេខនេះជារបស់យោធិនដែលត្រូវបានលុប")
+            elif is_separated(db, s):
+                errs.append("អត្តលេខនេះជារបស់យោធិនដែលបានចេញពីជួរ")
             elif not update_existing:
                 errs.append("អត្តលេខនេះមានក្នុងប្រព័ន្ធរួចហើយ")
             r["action"], r["soldier_id"] = "update", s.id
@@ -352,12 +378,12 @@ def compare(db: Session, data: list[tuple[int, dict]], fields: list[Field], sold
     file_mids = set()
     out = []
     for n, raw in data:
-        mid = _norm(raw.get("military_id"))
+        mid = format_military_id(_norm(raw.get("military_id")))
         if not mid:
             continue
         file_mids.add(mid)
         s = by_mid.get(mid) or db.scalar(select(Soldier).where(func.lower(Soldier.military_id) == mid.lower(),
-                                                               Soldier.deleted_at.is_(None)))
+                                                               Soldier.deleted_at.is_(None), not_separated()))
         if s is None:
             out.append({"row": n, "military_id": mid, "name_kh": _norm(raw.get("name_kh")), "status": "missing_in_db",
                         "diffs": []})

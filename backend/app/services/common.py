@@ -59,6 +59,17 @@ def paginate(db: Session, stmt: Select, page: int, size: int) -> tuple[list, int
     return list(rows), total or 0
 
 
+def in_batches(db: Session, stmt: Select, size: int = 1000):
+    """The objects of `stmt` (select(Model)...) in its order, loaded `size` at a time: only the ids are held in memory,
+    and no cursor stays open between batches (other queries can run while the objects are used)."""
+    model = stmt.column_descriptions[0]["entity"]
+    ids = db.scalars(stmt.with_only_columns(model.id)).all()
+    for i in range(0, len(ids), size):
+        chunk = ids[i:i + size]
+        by_id = {o.id: o for o in db.scalars(select(model).where(model.id.in_(chunk))).unique()}
+        yield from (by_id[x] for x in chunk)
+
+
 # ---------- unit scope ----------
 
 def unit_subtree_ids(db: Session, unit_id: int) -> list[int]:

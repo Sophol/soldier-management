@@ -73,6 +73,14 @@ const movement = computed(() => {
   }
 })
 
+// យោធិនប្រភេទ២ by type: ពលី · ពលី-មរណ · ពិការ (not counted among the serving soldiers)
+function category2Breakdown(t) {
+  if (!t) return ''
+  const parts = [['fallen', 'ពលី'], ['fallen_dead', 'ពលី-មរណ'], ['disabled', 'ពិការ']].map(([k, l]) => `${l} ${num(t[k] || 0)}`)
+  if (t.none) parts.push(`មិនទាន់កំណត់ ${num(t.none)}`)
+  return parts.join(' · ')
+}
+
 const cards = computed(() => {
   const d = data.value
   if (!d) return []
@@ -82,11 +90,12 @@ const cards = computed(() => {
     { label: 'ឯកសារចូល (ខែនេះ)', value: d.documents.incoming_month, icon: 'Download', color: '#7a6aa8', to: '/documents/incoming' },
     { label: 'ឯកសារចេញ (ខែនេះ)', value: d.documents.outgoing_month, icon: 'Upload', color: '#c9a227', to: '/documents/outgoing' },
     { label: 'យោធិនប្រភេទ១', value: d.categories.category1, icon: 'Avatar', color: '#5c9e8f', to: '/soldiers' },
-    { label: 'យោធិនប្រភេទ២', value: d.categories.category2, icon: 'UserFilled', color: '#9a8f6b', to: '/retirement' },
+    { label: 'យោធិនប្រភេទ២', value: d.categories.category2, icon: 'UserFilled', color: '#9a8f6b', to: '/category2',
+      sub: category2Breakdown(d.categories.category2_by_type) },
     { label: 'សំណើចូល (ឆ្នាំនេះ)', value: d.requests.incoming, icon: 'MessageBox', color: '#7a6aa8', to: '/documents/incoming' },
     { label: 'សំណើចេញ (ឆ្នាំនេះ)', value: d.requests.outgoing, icon: 'Promotion', color: '#b5543c', to: '/documents/outgoing' },
-    { label: 'កំពុងសិក្សាក្នុងប្រទេស', value: d.studying.in_country, icon: 'Reading', color: '#4f7cac', to: '/training/long' },
-    { label: 'កំពុងសិក្សាក្រៅប្រទេស', value: d.studying.abroad, icon: 'Location', color: '#24614b', to: '/training/long' },
+    { label: 'កំពុងសិក្សាក្នុងប្រទេស', value: d.studying.in_country, icon: 'Reading', color: '#4f7cac', to: '/training/long?abroad=no&participant_status=studying' },
+    { label: 'កំពុងសិក្សាក្រៅប្រទេស', value: d.studying.abroad, icon: 'Location', color: '#24614b', to: '/training/long?abroad=yes&participant_status=studying' },
   ]
 })
 
@@ -128,6 +137,7 @@ const pending = computed(() => {
             <div>
               <div class="stat-value">{{ num(c.value) }}</div>
               <div class="muted">{{ c.label }}</div>
+              <div v-if="c.sub" class="muted small">{{ c.sub }}</div>
             </div>
           </el-card>
         </el-col>
@@ -205,6 +215,7 @@ const pending = computed(() => {
 .stat :deep(.el-card__body) { display: flex; gap: 14px; align-items: center; }
 .stat-icon { width: 50px; height: 50px; border-radius: 10px; color: #fff; display: flex; align-items: center; justify-content: center; }
 .stat-value { font-size: 26px; font-weight: 600; }
+.small { font-size: 12px; margin-top: 2px; }
 .alerts { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
 .alert-item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
 .alert-item:hover { background: #f2f6f4; }

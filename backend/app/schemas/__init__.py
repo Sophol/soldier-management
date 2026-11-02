@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.services.soldier import format_military_id
+
 
 class In(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -236,6 +238,12 @@ class SoldierIn(In):
 
 # ---------- documents ----------
 
+    @field_validator("military_id")
+    @classmethod
+    def six_digit_military_id(cls, v: str) -> str:
+        return format_military_id(v)
+
+
 class DocumentInIn(In):
     incoming_no: str
     subject: str
@@ -280,6 +288,15 @@ class DecisionIn(In):
     incoming_document_id: int | None = None
     notes: str | None = None
     items: list[DecisionItemIn] = Field(min_length=1)
+
+
+class DecisionCheckIn(In):
+    """A decision being typed in the form, checked for anomalies before it is saved."""
+    id: int | None = None  # the decision being edited (not counted as "another decision")
+    kind: Literal["appoint", "transfer", "promote"]
+    decision_date: date | None = None
+    effective_date: date | None = None
+    items: list[DecisionItemIn] = []
 
 
 class WorkflowStepIn(In):
@@ -341,12 +358,38 @@ class AwardIn(In):
 
 class RetirementIn(In):
     soldier_id: int
-    type: Literal["pension", "voluntary", "disability", "death", "category2"]
+    type: Literal["pension", "voluntary", "disability", "death"]
     case_status: Literal["submitted", "processing", "done"] = "submitted"
     decision_no: str | None = None
     decision_date: date | None = None
     effective_date: date
     pension_amount: float | None = None
+    notes: str | None = None
+
+
+class RetirementBulkCheckIn(In):
+    military_ids: str = Field(max_length=100_000)  # pasted: one per line, or separated by commas/spaces
+
+
+class RetirementBulkIn(In):
+    """Several soldiers retired by one letter, optionally moved together to one unit (ស្ថាប័នកងឯកភាព/អង្គភាព)."""
+    soldier_ids: list[int] = Field(min_length=1, max_length=1000)
+    type: Literal["pension", "voluntary", "disability", "death"]
+    case_status: Literal["submitted", "processing", "done"] = "submitted"
+    decision_no: str | None = None
+    decision_date: date | None = None
+    effective_date: date
+    pension_amount: float | None = None
+    notes: str | None = None
+    unit_id: int | None = None
+
+
+class Category2In(In):
+    soldier_id: int
+    type: Literal["fallen", "fallen_dead", "disabled"]
+    decision_no: str | None = None
+    decision_date: date | None = None
+    effective_date: date
     notes: str | None = None
 
 

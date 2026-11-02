@@ -1,16 +1,24 @@
 """Staffing table (ក្របខណ្ឌ) and rank quotas: how many soldiers a unit position / a rank may have."""
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Lookup, Rank, Soldier, UnitPosition
-from app.services.soldier import INACTIVE_STATUS_CODES
+from app.services.soldier import INACTIVE_STATUS_CODES, not_category2, not_retired, not_separated
 
 
 def serving(stmt):
     """Restrict a soldier query to soldiers still in the strength (not deleted, not retired/separated)."""
     return stmt.outerjoin(Lookup, Lookup.id == Soldier.status_id).where(
-        Soldier.deleted_at.is_(None), or_(Lookup.code.is_(None), Lookup.code.not_in(INACTIVE_STATUS_CODES)))
+        Soldier.deleted_at.is_(None), or_(Lookup.code.is_(None), Lookup.code.not_in(INACTIVE_STATUS_CODES)),
+        not_separated(), not_category2(), not_retired())
+
+
+def serving_clause():
+    """The same restriction as serving() as a plain condition (no join), for queries that already join Lookup."""
+    inactive = select(Lookup.id).where(Lookup.code.in_(INACTIVE_STATUS_CODES))
+    return and_(Soldier.deleted_at.is_(None), or_(Soldier.status_id.is_(None), Soldier.status_id.not_in(inactive)),
+                not_separated(), not_category2(), not_retired())
 
 
 def filled_count(db: Session, *conds) -> int:

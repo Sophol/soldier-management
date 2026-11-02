@@ -75,13 +75,32 @@ class RetirementRecord(AuditMixin, SoftDeleteMixin, Base):
     __tablename__ = "retirement_records"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
-    # pension (គ្រប់អាយុ) / voluntary (ស្ម័គ្រចិត្ត) / disability (ពិការ) / death (ស្លាប់) / category2
+    # pension (គ្រប់អាយុ) / voluntary (ស្ម័គ្រចិត្ត) / disability (ពិការ) / death (ស្លាប់)
     type: Mapped[str] = mapped_column(String(20))
     case_status: Mapped[str] = mapped_column(String(20), default="submitted")  # submitted / processing / done
     decision_no: Mapped[str | None] = mapped_column(String(100))
     decision_date: Mapped[date | None] = mapped_column(Date)
     effective_date: Mapped[date] = mapped_column(Date)
     pension_amount: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    notes: Mapped[str | None] = mapped_column(Text)
+    # soldier status/unit before this record, restored if the record is deleted
+    previous_status_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
+    previous_unit_id: Mapped[int | None] = mapped_column(ForeignKey("units.id"))
+
+    soldier = relationship("Soldier", lazy="joined")
+
+
+class Category2Record(AuditMixin, SoftDeleteMixin, Base):
+    """យោធិនប្រភេទ២: no longer counted in the serving strength (still in the soldier list)."""
+
+    __tablename__ = "category2_records"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
+    # fallen (ពលី) / fallen_dead (ពលី-មរណ) / disabled (ពិការ); NULL on records moved from retirement
+    type: Mapped[str | None] = mapped_column(String(20))
+    decision_no: Mapped[str | None] = mapped_column(String(100))
+    decision_date: Mapped[date | None] = mapped_column(Date)
+    effective_date: Mapped[date] = mapped_column(Date)
     notes: Mapped[str | None] = mapped_column(Text)
     # soldier status/unit before this record, restored if the record is deleted
     previous_status_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
