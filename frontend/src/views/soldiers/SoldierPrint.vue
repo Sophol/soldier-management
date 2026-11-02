@@ -1,27 +1,53 @@
 <script setup>
 /** A4 summary profile (ប្រវត្តិរូបសង្ខេប) – printed from the browser. */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import QRCode from 'qrcode'
 import http from '@/api/http'
 import AuthImage from '@/components/AuthImage.vue'
+import { useAuth } from '@/stores/auth'
 import { fmtDateLong, genderText, khDigits, todayISO } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuth()
 const s = ref(null)
 const org = ref('')
 const today = todayISO()
 const print = () => window.print()
 
+// the QR is stamped with the moment of printing (refreshed on every print, the button or Ctrl+P)
+const printedAt = ref(new Date())
+const stamp = () => { printedAt.value = new Date() }
+
 onMounted(async () => {
+  window.addEventListener('beforeprint', stamp)
   const [p, st] = await Promise.all([http.get(`/soldiers/${route.params.id}/profile`), http.get('/settings')])
   s.value = p.data
   org.value = st.data.org_name_kh?.value || ''
 })
+onBeforeUnmount(() => window.removeEventListener('beforeprint', stamp))
 
 const d = (v) => (v ? fmtDateLong(v) : '................')
 const k = (v) => (v == null || v === '' ? '................' : khDigits(v))
 const history = computed(() => (s.value?.history || []).filter((h) => h.kind !== 'initial').slice(0, 10))
+
+const pad = (n) => String(n).padStart(2, '0')
+const qr = computed(() => {
+  if (!s.value) return null
+  const t = printedAt.value
+  const u = auth.user
+  const text = [
+    `អត្តលេខ: ${s.value.military_id || ''}`,
+    `ឈ្មោះ: ${s.value.name_kh || ''}`,
+    `បោះពុម្ព: ${pad(t.getDate())}/${pad(t.getMonth() + 1)}/${t.getFullYear()} ${pad(t.getHours())}:${pad(t.getMinutes())}`,
+    `ដោយ: ${u ? `${u.full_name} (${u.username})` : ''}`,
+  ].join('\n')
+  const m = QRCode.create(text, { errorCorrectionLevel: 'L' }).modules
+  let path = ''
+  for (let r = 0; r < m.size; r++) for (let c = 0; c < m.size; c++) if (m.get(r, c)) path += `M${c} ${r}h1v1h-1z`
+  return { size: m.size, path }
+})
 </script>
 
 <template>
@@ -53,7 +79,12 @@ const history = computed(() => (s.value?.history || []).filter((h) => h.kind !==
             <tr><th>អង្គភាព</th><td>{{ s.unit_name }}</td></tr>
           </tbody>
         </table>
-        <div class="photo"><AuthImage v-if="s.photo_path" :src="`/soldiers/${s.id}/photo`" /><span v-else>រូបថត ៤x៦</span></div>
+        <div class="side">
+          <svg v-if="qr" class="qr" :viewBox="`-2 -2 ${qr.size + 4} ${qr.size + 4}`" shape-rendering="crispEdges">
+            <rect x="-2" y="-2" :width="qr.size + 4" :height="qr.size + 4" fill="#fff" /><path :d="qr.path" fill="#000" />
+          </svg>
+          <div class="photo"><AuthImage v-if="s.photo_path" :src="`/soldiers/${s.id}/photo`" /><span v-else>រូបថត ៤x៦</span></div>
+        </div>
       </div>
 
       <table class="info full">
@@ -63,7 +94,7 @@ const history = computed(() => (s.value?.history || []).filter((h) => h.kind !==
           <tr><th>លេខអត្តសញ្ញាណប័ណ្ណ</th><td>{{ k(s.national_id) }}</td><th>ទូរសព្ទ</th><td>{{ k(s.phone) }}</td></tr>
           <tr><th>ថ្ងៃចូលបម្រើទ័ព</th><td>{{ d(s.enlistment_date) }}</td><th>រយៈពេលបម្រើការងារ</th><td>{{ k(s.service_length) }}</td></tr>
           <tr><th>ថ្ងៃឡើងស័ក្តិ</th><td>{{ d(s.rank_date) }}</td><th>រយៈពេលឡើងស័ក្តិ</th><td>{{ k(s.time_in_rank) }}</td></tr>
-          <tr><th>ថ្ងៃមុខតំណែង</th><td>{{ d(s.position_date) }}</td><th>មកពីស្ថាប័នកងឯកភាព</th><td>{{ s.from_unit_text }}</td></tr>
+          <tr><th>ថ្ងៃមុខតំណែង</th><td>{{ d(s.position_date) }}</td><th>រយៈពេលមុខតំណែង</th><td>{{ k(s.time_in_position) }}</td></tr>
           <tr><th>កម្រិតវប្បធម៌</th><td>{{ s.education_level_name }}</td><th>ជំនាញឯកទេស</th><td>{{ s.specialty_name }}</td></tr>
           <tr><th>ភាសាបរទេស</th><td>{{ s.languages.map((l) => l.language_name).join(', ') }}</td><th>ប្រភេទឈាម</th><td>{{ s.blood_type_name }}</td></tr>
           <tr><th>ឆ្លងប្រយុទ្ធ</th><td>{{ s.combat_veteran ? 'បាទ/ចាស' : 'ទេ' }}</td><th>ស្ថានភាព</th><td>{{ s.status_name }}</td></tr>
@@ -129,6 +160,8 @@ const history = computed(() => (s.value?.history || []).filter((h) => h.kind !==
 h1 { text-align: center; font-size: 18px; margin: 8px 0 14px; text-decoration: underline; text-underline-offset: 8px; }
 h3 { font-size: 14px; margin: 14px 0 6px; }
 .top { display: flex; gap: 14px; align-items: flex-start; }
+.side { display: flex; flex-direction: column; align-items: center; gap: 3mm; flex-shrink: 0; }
+.qr { width: 24mm; height: 24mm; display: block; }
 .photo { width: 32mm; height: 42mm; border: 1px solid #333; display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; color: #888; }
 .photo :deep(img) { width: 100%; height: 100%; object-fit: cover; }
 table { border-collapse: collapse; width: 100%; }
