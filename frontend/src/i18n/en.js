@@ -39,6 +39,7 @@ export default {
     awards: 'Commendations & medals',
     idCards: 'Military ID cards',
     retirement: 'Retirement',
+    policy: 'Policy',
     separation: 'Leaving service',
     category2: 'Category 2 soldiers',
     recruitment: 'Recruitment & reserves',

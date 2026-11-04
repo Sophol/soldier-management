@@ -45,7 +45,9 @@ def approve_all(c, decision_id):
 
 
 def test_health_and_auth(client):
-    assert client.get("/api/health").json() == {"status": "ok"}
+    from app.main import app
+
+    assert client.get("/api/health").json() == {"status": "ok", "version": app.version}
     assert client.get(f"{API}/auth/me").status_code == 401
     assert client.post(f"{API}/auth/login", json={"username": "admin", "password": "wrong"}).status_code == 401
 

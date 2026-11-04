@@ -36,6 +36,7 @@ from app.models import (
 from app.models.geo import Commune
 from app.schemas import SoldierIn
 from app.services import soldier_io
+from app.services.cards import soldier_card_clause
 from app.services.common import (
     audit,
     check_unit_in_scope,
@@ -125,7 +126,7 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
                 in_rank_min=None, in_position_min=None, missing=None, has_attachments=None, retire_within=None,
                 promotion_due=False, serving_only=False, nationality=None, ethnicity=None, id_expiry=None,
                 housing_status=None, base_province_id=None, base_district_id=None, voting_province_id=None,
-                voting_district_id=None, dependents_min=None, created_by=None, created_from=None, created_to=None, updated_from=None,
+                voting_district_id=None, dependents_min=None, card=None, created_by=None, created_from=None, created_to=None, updated_from=None,
                 updated_to=None, sort="rank", order="desc") -> Select:
     stmt = select(Soldier).where(Soldier.deleted_at.is_(None), not_separated())
     scope = scope_unit_ids(db, user)
@@ -218,6 +219,8 @@ def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=
             stmt = stmt.where(MISSING[key])
     if has_attachments in ("yes", "no"):
         stmt = stmt.where(MISSING["attachments"] if has_attachments == "no" else ~MISSING["attachments"])
+    if card:  # អត្តសញ្ញាណប័ណ្ណយោធិន: none = no valid card, outdated = the card shows an old rank/position
+        stmt = stmt.where(soldier_card_clause(card))
     if retire_within or promotion_due:
         # local import: reports imports a lot
         from app.api.v1.reports import promotion_clause, retiring_clause
@@ -266,6 +269,7 @@ def _filters(
     id_expiry: str | None = Query(None, pattern="^(soon|expired|missing)$"), housing_status: str | None = None,
     base_province_id: int | None = None, base_district_id: int | None = None, voting_province_id: int | None = None,
     voting_district_id: int | None = None, dependents_min: int | None = None,
+    card: str | None = Query(None, pattern="^(none|outdated)$"),
     created_by: int | None = None, created_from: date | None = None, created_to: date | None = None,
     updated_from: date | None = None, updated_to: date | None = None,
     sort: str = "rank", order: str = "desc",
@@ -306,6 +310,68 @@ def list_soldiers(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500
                   user: User = Depends(require("soldiers", "view"))):
     items, total = paginate(db, build_query(db, user, **f), page, size)
     return {"items": [soldier_summary(s) for s in items], "total": total, "page": page, "size": size}
+
+
+# ---------------- ការងារគោលនយោបាយ (New (2).txt §10) ----------------
+
+def village_texts(db: Session, ids) -> dict[int, str]:
+    """{village_id: "ភូមិ… ឃុំ… ស្រុក… ខេត្ត…"} for many villages in one query (village_path does one at a time)."""
+    from app.models import Province
+
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    rows = db.execute(select(Village.id, Village.name_kh, Commune.type, Commune.name_kh, District.type, District.name_kh,
+                             Province.type, Province.name_kh)
+                      .join(Commune, Commune.id == Village.commune_id).join(District, District.id == Commune.district_id)
+                      .join(Province, Province.id == District.province_id).where(Village.id.in_(ids)))
+    return {vid: f"ភូមិ{v} {ct}{c} {dt}{d} {pt}{p}" for vid, v, ct, c, dt, d, pt, p in rows}
+
+
+def id_expiry_state(expiry: date | None, horizon_days: int) -> str:
+    """missing / expired / soon (within the alert horizon) / valid."""
+    if not expiry:
+        return "missing"
+    today = date.today()
+    if expiry < today:
+        return "expired"
+    return "soon" if expiry <= today + timedelta(days=horizon_days) else "valid"
+
+
+ID_EXPIRY_STATES = {"missing": "មិនទាន់បញ្ចូល", "expired": "ផុតកំណត់ហើយ", "soon": "ជិតផុតកំណត់", "valid": "នៅមានសុពលភាព"}
+
+
+def policy_rows(db: Session, soldiers: list[Soldier]) -> list[dict]:
+    from app.api.v1.system import get_setting
+
+    horizon = int(get_setting(db, "alert_months_ahead", "6") or 6) * 30
+    villages = village_texts(db, [v for s in soldiers for v in (s.base_village_id, s.voting_village_id)])
+    marital = names_by_id(db, Lookup, [s.marital_status_id for s in soldiers])
+    out = []
+    for s in soldiers:
+        state = id_expiry_state(s.national_id_expiry, horizon)
+        out.append({
+            **soldier_summary(s),
+            "national_id": s.national_id, "national_id_expiry": s.national_id_expiry.isoformat() if s.national_id_expiry else None,
+            "id_days_left": (s.national_id_expiry - date.today()).days if s.national_id_expiry else None,
+            "id_expiry_state": state, "id_expiry_state_name": ID_EXPIRY_STATES[state],
+            "base_text": villages.get(s.base_village_id), "voting_text": villages.get(s.voting_village_id),
+            "voting_place": s.voting_place, "housing_status": s.housing_status,
+            "housing_status_name": HOUSING.get(s.housing_status or ""),
+            "marital_status_name": marital.get(s.marital_status_id), "spouse_name": s.spouse_name,
+            "children_count": s.children_count, "dependents_count": s.dependents_count,
+        })
+    return out
+
+
+@router.get("/policy")
+def list_policy(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500),
+                f: dict = Depends(_filters), db: Session = Depends(get_db),
+                user: User = Depends(require("soldiers", "view"))):
+    """ការងារគោលនយោបាយ: the soldier list (same filters) with national ID expiry, base, polling place, housing and
+    dependants."""
+    items, total = paginate(db, build_query(db, user, **f), page, size)
+    return {"items": policy_rows(db, items), "total": total, "page": page, "size": size}
 
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

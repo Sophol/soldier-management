@@ -14,7 +14,7 @@ from sqlalchemy import and_, case, extract, false, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.api.v1.conscripts import registration_counts
-from app.api.v1.decisions import IN_PROGRESS, can_act_at, overdue_cutoff
+from app.api.v1.decisions import IN_PROGRESS, _in_scope_condition, can_act_at, overdue_cutoff
 from app.api.v1.records import (
     CAMBODIA_IDS,
     CASE_STATUS,
@@ -25,14 +25,17 @@ from app.api.v1.records import (
     RETIREMENT_TYPES,
     discipline_status,
 )
+from app.api.v1.soldiers import ID_EXPIRY_STATES, MISSING, id_expiry_state, search_clause
 from app.api.v1.system import get_setting
 from app.core.database import get_db
 from app.core.deps import require
+from app.core.permissions import DECISION_STATUSES
 from app.models import (
     AuditLog,
-    Category2Record,
     AwardRecord,
+    Category2Record,
     Decision,
+    DecisionItem,
     DisciplineRecord,
     DocumentIncoming,
     DocumentOutgoing,
@@ -50,10 +53,12 @@ from app.models import (
     TrainingCourse,
     TrainingParticipant,
     Unit,
+    UnitPosition,
     User,
 )
 from app.models.conscript import REGISTRATION_STATUSES
 from app.models.decision import DECISION_KINDS
+from app.services.cards import CARD_REASONS, CARD_STATUS, OUTDATED, card_status, outdated_card_clause, outdated_reasons
 from app.services.common import in_batches, paginate, scope_unit_ids, unit_subtree_ids
 from app.services.soldier import age, diff_ym, soldier_summary, years_to_next_rank, ym_text
 from app.services.soldier_io import MAX_EXPORT_ROWS
@@ -357,9 +362,13 @@ def activity(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)
 REPORTS = {
     "strength_by_unit": "តារាងកម្លាំងតាមអង្គភាព",
     "strength_by_rank": "តារាងកម្លាំងតាមឋានន្តរស័ក្តិ",
+    "strength_by_age": "តារាងកម្លាំងតាមក្រុមអាយុ និងភេទ",
+    "staffing": "ក្របខណ្ឌកំណត់ និងជាក់ស្ដែង (ទំនេរ/ខ្វះ/លើស)",
+    "missing_data": "ទិន្នន័យខ្វះ តាមអង្គភាព",
     "soldier_list": "បញ្ជីយោធិន",
     "movements": "របាយការណ៍កើនថយ",
     "decisions": "បញ្ជីតែងតាំង ផ្លាស់ប្ដូរ និងដំឡើងឋានន្តរស័ក្តិ",
+    "decision_status": "សំណើតាមស្ថានភាពអនុម័ត",
     "promotion_due": "បញ្ជីយោធិនគ្រប់លក្ខខណ្ឌដំឡើងឋានន្តរស័ក្តិ",
     "retirement_due": "បញ្ជីយោធិនជិតដល់អាយុចូលនិវត្តន៍",
     "training": "របាយការណ៍បណ្ដុះបណ្ដាល",
@@ -368,6 +377,8 @@ REPORTS = {
     "retirement": "បញ្ជីសោធននិវត្តន៍",
     "category2": "បញ្ជីយោធិនប្រភេទ២ (ពលី ពលី-មរណ ពិការ)",
     "separation": "បញ្ជីយោធិនចេញពីជួរ",
+    "id_cards": "របាយការណ៍អត្តសញ្ញាណប័ណ្ណយោធិន",
+    "policy": "ការងារគោលនយោបាយ — អត្តសញ្ញាណប័ណ្ណសញ្ជាតិជិតផុត/ផុតកំណត់",
     "conscripts": "ស្ថិតិយុវជនបំពេញកាតព្វកិច្ចយោធា តាមរាជធានី/ខេត្ត",
 }
 
@@ -391,6 +402,34 @@ def _soldier_cells(s: Soldier) -> dict:
     return {"military_id": s.military_id, "rank_name": s.rank.name_kh if s.rank else "", "name_kh": s.name_kh,
             "gender": "ប្រុស" if s.gender == "M" else "ស្រី", "unit_name": s.unit.name_kh if s.unit else "",
             "position_name": s.position.name_kh if s.position else ""}
+
+
+KH_DIGITS = str.maketrans("0123456789", "០១២៣៤៥៦៧៨៩")
+# ក្រុមអាយុ: (from, to) inclusive; None = open-ended
+AGE_GROUPS = [(None, 24), (25, 29), (30, 34), (35, 39), (40, 44), (45, 49), (50, 54), (55, 59), (60, None)]
+
+
+def _age_group_label(lo: int | None, hi: int | None) -> str:
+    if lo is None:
+        return f"ក្រោម {hi + 1} ឆ្នាំ".translate(KH_DIGITS)
+    if hi is None:
+        return f"{lo} ឆ្នាំឡើង".translate(KH_DIGITS)
+    return f"{lo}–{hi} ឆ្នាំ".translate(KH_DIGITS)
+
+
+def _age_group(age_years: int | None) -> int:
+    """Index in AGE_GROUPS (-1 = unknown birth date)."""
+    if age_years is None:
+        return -1
+    for i, (lo, hi) in enumerate(AGE_GROUPS):
+        if (lo is None or age_years >= lo) and (hi is None or age_years <= hi):
+            return i
+    return -1
+
+
+MISSING_COLS = [("photo", "ខ្វះរូបថត"), ("dob", "ខ្វះថ្ងៃកំណើត"), ("enlistment", "ខ្វះថ្ងៃចូលទ័ព"),
+                ("rank_date", "ខ្វះថ្ងៃឡើងស័ក្តិ"), ("national_id", "ខ្វះលេខអត្តសញ្ញាណប័ណ្ណ"), ("phone", "ខ្វះទូរស័ព្ទ"),
+                ("attachments", "ខ្វះឯកសារភ្ជាប់")]
 
 
 def _numbered(rows, start: int = 0):
@@ -615,6 +654,146 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
                          "notes": getattr(r, "notes", "") or "", "level": getattr(r, "level", "") or "",
                          "by": getattr(r, "awarded_by", "") or "", "status": status})
 
+    elif key == "strength_by_age":
+        classes = [(f"c{c.id}", c.name_kh) for c in db.scalars(select(RankClass).order_by(RankClass.sort_order))]
+        rank_class = {r.id: r.rank_class_id for r in db.scalars(select(Rank))}
+        cols = [("age_group", "ក្រុមអាយុ")] + classes + [("male", "ប្រុស"), ("female", "ស្រី"), ("total", "សរុប")]
+        groups = [_age_group_label(lo, hi) for lo, hi in AGE_GROUPS]
+        counts = {i: {k: 0 for k, _ in cols[1:]} for i in [*range(len(AGE_GROUPS)), -1]}
+        # grouped by birth date (a few thousand distinct days at most), then put into age groups here
+        stmt = select(Soldier.date_of_birth, Soldier.current_rank_id, Soldier.gender, func.count(Soldier.id)).select_from(Soldier)
+        for dob, rank_id, gender, n in db.execute(active_soldiers(db, user, unit_id, stmt).group_by(
+                Soldier.date_of_birth, Soldier.current_rank_id, Soldier.gender)):
+            c = counts[_age_group(age(dob))]
+            if rank_id in rank_class:
+                c[f"c{rank_class[rank_id]}"] += n
+            c["female" if gender == "F" else "male"] += n
+            c["total"] += n
+        for i, label in [*enumerate(groups), (-1, "មិនស្គាល់ថ្ងៃកំណើត")]:
+            if i >= 0 or counts[-1]["total"]:
+                rows.append({"age_group": label, **counts[i]})
+        totals = {"age_group": "សរុប", **{k: sum(r[k] for r in rows) for k, _ in cols[1:]}}
+
+    elif key == "staffing":
+        # kind: vacant (ខ្វះ) / full (គ្រប់) / over (លើស)
+        cols = [("unit", "អង្គភាព"), ("position", "មុខតំណែង"), ("ranks", "ឋានន្តរស័ក្តិ"), ("quota", "ក្របខណ្ឌកំណត់"),
+                ("filled", "ជាក់ស្ដែង"), ("vacant", "ទំនេរ (ខ្វះ)"), ("over", "លើស")]
+        stmt = select(UnitPosition).join(Unit, Unit.id == UnitPosition.unit_id).join(
+            Position, Position.id == UnitPosition.position_id)
+        if scope is not None:
+            stmt = stmt.where(UnitPosition.unit_id.in_(scope))
+        if unit_ids is not None:
+            stmt = stmt.where(UnitPosition.unit_id.in_(unit_ids))
+        filled_stmt = select(Soldier.current_unit_id, Soldier.current_position_id, func.count(Soldier.id)).select_from(Soldier)
+        filled = {(u, p): n for u, p, n in db.execute(active_soldiers(db, user, unit_id, filled_stmt).group_by(
+            Soldier.current_unit_id, Soldier.current_position_id))}
+        rank_names = {r.id: r.name_kh for r in db.scalars(select(Rank))}
+        for up in db.scalars(stmt.order_by(Unit.path, Unit.sort_order, Position.sort_order, Position.name_kh)).unique():
+            n = filled.get((up.unit_id, up.position_id), 0)
+            state = "vacant" if n < up.quota else "over" if n > up.quota else "full"
+            if kind in ("vacant", "full", "over") and kind != state:
+                continue
+            ranks = " – ".join(x for x in (rank_names.get(up.min_rank_id), rank_names.get(up.max_rank_id)) if x)
+            rows.append({"unit": up.unit.name_kh, "position": up.position.name_kh, "ranks": ranks, "quota": up.quota,
+                         "filled": n, "vacant": max(up.quota - n, 0), "over": max(n - up.quota, 0)})
+        totals = {"unit": "សរុប", **{k: sum(r[k] for r in rows) for k in ("quota", "filled", "vacant", "over")}}
+
+    elif key == "missing_data":
+        keys = [k for k, _ in MISSING_COLS]
+        cols = [("unit", "អង្គភាព"), ("total", "យោធិនសរុប")] + MISSING_COLS
+        stmt = select(Soldier.current_unit_id, func.count(Soldier.id),
+                      *(func.sum(case((MISSING[k], 1), else_=0)) for k in keys)).select_from(Soldier)
+        grouped = db.execute(active_soldiers(db, user, unit_id, stmt).group_by(Soldier.current_unit_id)).all()
+        all_units = db.scalars(select(Unit).order_by(Unit.path)).all()
+        paths = {u.id: u.path for u in all_units}
+        counts = defaultdict(lambda: defaultdict(int))
+        totals = {"unit": "សរុបរួម", **{k: 0 for k, _ in cols[1:]}}
+        no_unit = None
+        for soldier_unit, total, *missing in grouped:
+            values = {"total": total, **{k: int(v or 0) for k, v in zip(keys, missing, strict=True)}}
+            if soldier_unit is None:
+                no_unit = values
+            path_ids = [int(p) for p in paths[soldier_unit].strip("/").split("/")] if soldier_unit in paths else []
+            for target in [*(counts[uid] for uid in path_ids), totals]:  # the unit, all of its parents, the total
+                for k, v in values.items():
+                    target[k] += v
+        for u in all_units:
+            if (unit_ids is None or u.id in unit_ids) and (scope is None or u.id in scope) and counts[u.id]["total"]:
+                rows.append({"unit": ("　" * (u.level - 1)) + u.name_kh, "_level": u.level,
+                             **{k: counts[u.id].get(k, 0) for k, _ in cols[1:]}})
+        if no_unit:
+            rows.append({"unit": "មិនទាន់មានអង្គភាព", **no_unit})
+
+    elif key == "decision_status":
+        statuses = list(DECISION_STATUSES)
+        cols = [("kind", "ប្រភេទសំណើ")] + [(st, DECISION_STATUSES[st]) for st in statuses] + [("total", "សរុប")]
+        stmt = select(Decision.kind, Decision.status, func.count(Decision.id)).where(
+            Decision.deleted_at.is_(None), Decision.decision_date.between(df, dt))
+        if (visible := _in_scope_condition(db, user)) is not None:
+            stmt = stmt.where(visible)
+        if unit_ids is not None:
+            stmt = stmt.where(Decision.id.in_(select(DecisionItem.decision_id).where(
+                or_(DecisionItem.new_unit_id.in_(unit_ids), DecisionItem.old_unit_id.in_(unit_ids)))))
+        if kind:
+            stmt = stmt.where(Decision.kind == kind)
+        counts = {(k, st): n for k, st, n in db.execute(stmt.group_by(Decision.kind, Decision.status))}
+        for k, label in DECISION_KINDS.items():
+            if kind and k != kind:
+                continue
+            row = {"kind": label, **{st: counts.get((k, st), 0) for st in statuses}}
+            row["total"] = sum(row[st] for st in statuses)
+            rows.append(row)
+        totals = {"kind": "សរុប", **{c: sum(r[c] for r in rows) for c, _ in cols[1:]}}
+
+    elif key == "id_cards":
+        # kind: expiring (within 90 days) / expired / outdated (old rank/position) / pending / lost; by default every
+        # card except those already replaced
+        cols = SOLDIER_COLS + [("unit_name", "អង្គភាព"), ("card_no", "លេខប័ណ្ណ"), ("issue_date", "ថ្ងៃចេញ"),
+                               ("expiry_date", "ថ្ងៃផុតកំណត់"), ("days_left", "នៅសល់ (ថ្ងៃ)"), ("status", "ស្ថានភាព"),
+                               ("reason", "មូលហេតុ"), ("outdated", "ត្រូវធ្វើប័ណ្ណថ្មី")]
+        today = date.today()
+        stmt = select(MilitaryCard).where(MilitaryCard.deleted_at.is_(None), *soldier_in_scope(MilitaryCard))
+        if kind == "expiring":
+            stmt = stmt.where(MilitaryCard.status == "issued", MilitaryCard.expiry_date.between(today, today + timedelta(days=90)))
+        elif kind == "expired":
+            stmt = stmt.where(MilitaryCard.status == "issued", MilitaryCard.expiry_date < today)
+        elif kind == "outdated":
+            stmt = stmt.where(outdated_card_clause())
+        elif kind in ("pending", "lost"):
+            stmt = stmt.where(MilitaryCard.status == kind)
+        else:
+            stmt = stmt.where(MilitaryCard.status != "replaced")
+        for c in db.scalars(stmt.order_by(MilitaryCard.expiry_date.is_(None), MilitaryCard.expiry_date)).unique():
+            st = card_status(c)
+            rows.append({**_soldier_cells(c.soldier), "card_no": c.card_no or "",
+                         "issue_date": c.issue_date.isoformat() if c.issue_date else "",
+                         "expiry_date": c.expiry_date.isoformat() if c.expiry_date else "",
+                         "days_left": (c.expiry_date - today).days if c.expiry_date and st == "issued" else "",
+                         "status": CARD_STATUS[st], "reason": CARD_REASONS.get(c.reason or "", ""),
+                         "outdated": ", ".join(OUTDATED[k] for k in outdated_reasons(c))})
+        by_status = defaultdict(int)
+        for r in rows:
+            by_status[r["status"]] += 1
+        totals = {"military_id": "សរុប", "rank_name": f"{len(rows)} ប័ណ្ណ",
+                  "status": " / ".join(f"{k} {v}" for k, v in by_status.items())}
+
+    elif key == "policy":
+        # kind: soon (within the alert horizon) / expired; both by default
+        cols = SOLDIER_COLS + [("unit_name", "អង្គភាព"), ("national_id", "លេខអត្តសញ្ញាណប័ណ្ណ"),
+                               ("expiry", "ថ្ងៃផុតកំណត់"), ("days_left", "នៅសល់ (ថ្ងៃ)"), ("state", "ស្ថានភាព"),
+                               ("phone", "ទូរស័ព្ទ")]
+        horizon_days = int(get_setting(db, "alert_months_ahead", "6") or 6) * 30
+        today = date.today()
+        upto = today - timedelta(days=1) if kind == "expired" else today + timedelta(days=horizon_days)
+        stmt = active_soldiers(db, user, unit_id).where(Soldier.national_id_expiry.is_not(None),
+                                                        Soldier.national_id_expiry <= upto)
+        if kind == "soon":
+            stmt = stmt.where(Soldier.national_id_expiry >= today)
+        for s in db.scalars(stmt.order_by(Soldier.national_id_expiry)).unique():
+            rows.append({**_soldier_cells(s), "national_id": s.national_id or "", "expiry": s.national_id_expiry.isoformat(),
+                         "days_left": (s.national_id_expiry - today).days, "phone": s.phone or "",
+                         "state": ID_EXPIRY_STATES[id_expiry_state(s.national_id_expiry, horizon_days)]})
+
     elif key == "conscripts":
         cols = [("province", "រាជធានី/ខេត្ត")] + [(st, label) for st, label in REGISTRATION_STATUSES.items()] + \
                [("total", "សរុប")]
@@ -635,6 +814,24 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
             "available_fields": [{"key": k, "label": v} for k, v in SOLDIER_FIELDS.items()] if key == "soldier_list" else None,
             "columns": [{"key": k, "label": lbl} for k, lbl in cols], "rows": rows, "totals": totals,
             "paging": paging, "org_name": get_setting(db, "org_name_kh")}
+
+
+@router.get("/retirement-due", tags=["retirement"])
+def list_retirement_due(months: int | None = Query(None, ge=0, le=120), unit_id: int | None = None,
+                        q: str | None = None, page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=1000),
+                        db: Session = Depends(get_db), user: User = Depends(require("retirement", "view"))):
+    """បង្ហាញទិន្នន័យជិតដល់អាយុចូលនិវត្តន៍: serving soldiers who reach their retirement age within `months`
+    (default: the alert setting), those already past it included; soonest first."""
+    today = date.today()
+    horizon = today + timedelta(days=months * 30) if months is not None else retirement_horizon(db)
+    stmt = active_soldiers(db, user, unit_id)
+    if q and q.strip():
+        stmt = stmt.where(search_clause(db, q))
+    found = retiring_by(db, stmt, horizon)
+    by_gender = retirement_ages(db)
+    items = [{**soldier_summary(s), "retire_date": rd.isoformat(), "retire_age": retirement_age(s, by_gender),
+              "days_left": (rd - today).days} for s, rd in found[(page - 1) * size: page * size]]
+    return {"items": items, "total": len(found), "page": page, "size": size, "horizon": horizon.isoformat()}
 
 
 @router.get("/reports")

@@ -152,6 +152,8 @@ class MilitaryCard(AuditMixin, SoftDeleteMixin, Base):
     soldier_id: Mapped[int] = mapped_column(ForeignKey("soldiers.id"), index=True)
     card_no: Mapped[str | None] = mapped_column(String(100), index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # issued / pending / lost / replaced
+    # why this card was made: first / promotion / position / transfer / expired / lost / damaged / correction / other
+    reason: Mapped[str | None] = mapped_column(String(20))
     issue_date: Mapped[date | None] = mapped_column(Date)
     expiry_date: Mapped[date | None] = mapped_column(Date, index=True)
     notes: Mapped[str | None] = mapped_column(Text)

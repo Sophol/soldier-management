@@ -15,3 +15,7 @@ frontend/dist/
 # legacy dump with real citizen personal data – never commit
 member_db.sql
 .DS_Store
+# Windows folder customisation / thumbnails (local only)
+desktop.ini
+Thumbs.db
+/folderico-*.ico

@@ -22,9 +22,15 @@ const fieldCatalog = ref([])
 // soldier list: shown one page at a time (the Excel file has every row)
 const paging = reactive({ page: 1, size: 100 })
 
-const usesDates = computed(() => ['movements', 'decisions', 'training', 'discipline', 'awards', 'retirement', 'category2', 'separation', 'conscripts'].includes(f.key))
+const usesDates = computed(() => ['movements', 'decisions', 'decision_status', 'training', 'discipline', 'awards', 'retirement', 'category2', 'separation', 'conscripts'].includes(f.key))
+const DECISION_KINDS = [{ value: 'appoint', label: 'តែងតាំង' }, { value: 'transfer', label: 'ផ្លាស់ប្ដូរ' }, { value: 'promote', label: 'ដំឡើងស័ក្តិ' }]
 const kindOptions = computed(() => ({
-  decisions: [{ value: 'appoint', label: 'តែងតាំង' }, { value: 'transfer', label: 'ផ្លាស់ប្ដូរ' }, { value: 'promote', label: 'ដំឡើងស័ក្តិ' }],
+  decisions: DECISION_KINDS,
+  decision_status: DECISION_KINDS,
+  staffing: [{ value: 'vacant', label: 'នៅទំនេរ (ខ្វះ)' }, { value: 'full', label: 'គ្រប់ចំនួន' }, { value: 'over', label: 'លើសក្របខណ្ឌ' }],
+  id_cards: [{ value: 'expiring', label: 'ផុតកំណត់ក្នុង ៩០ ថ្ងៃ' }, { value: 'expired', label: 'ផុតកំណត់ហើយ' },
+    { value: 'outdated', label: 'ត្រូវធ្វើប័ណ្ណថ្មី' }, { value: 'pending', label: 'មិនទាន់ចេញ' }, { value: 'lost', label: 'បាត់' }],
+  policy: [{ value: 'soon', label: 'ជិតផុតកំណត់' }, { value: 'expired', label: 'ផុតកំណត់ហើយ' }],
   training: [{ value: 'long', label: 'រយៈពេលវែង' }, { value: 'short', label: 'រយៈពេលខ្លី' }],
   retirement: [{ value: 'pension', label: 'សោធននិវត្តន៍' }, { value: 'voluntary', label: 'ស្ម័គ្រចិត្ត' }],
   category2: [{ value: 'fallen', label: 'ពលី' }, { value: 'fallen_dead', label: 'ពលី-មរណ' }, { value: 'disabled', label: 'ពិការ' }],
@@ -99,7 +105,7 @@ onMounted(async () => {
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="kindOptions" label="ប្រភេទ">
-          <el-select v-model="f.kind" clearable style="width: 150px">
+          <el-select v-model="f.kind" clearable style="width: 200px">
             <el-option v-for="o in kindOptions" :key="o.value" v-bind="o" />
           </el-select>
         </el-form-item>

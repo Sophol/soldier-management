@@ -230,6 +230,12 @@ SETTINGS = [
     ("retirement_age_female", "55", "Retirement age – female (confirm with office)"),
     ("alert_months_ahead", "6", "Months ahead for retirement alerts"),
     ("workflow_overdue_days", "3", "Days a decision may wait at one approval step before it is flagged"),
+    # About page (អំពីយើង): contact and full user manual link, empty until the office fills them in
+    ("contact_name", "", "About page: contact unit / person in charge"),
+    ("contact_phone", "", "About page: contact phone"),
+    ("contact_email", "", "About page: contact e-mail"),
+    ("contact_address", "", "About page: contact address"),
+    ("manual_url", "", "About page: link to the full user manual (PDF/URL)"),
 ]
 
 

@@ -25,6 +25,11 @@ const CASE_STATUS = options({ submitted: 'ដាក់ឯកសារ', processi
 const DISCIPLINE_STATUS = options({ active: 'កំពុងអនុវត្ត', expired: 'ផុតកំណត់', cancelled: 'លុបចោល' })
 const CARD_STATUS = options({ issued: 'ចេញរួច', pending: 'មិនទាន់ចេញ', expired: 'ផុតកំណត់', lost: 'បាត់', replaced: 'ជំនួស' })
 const EXPIRING = [30, 60, 90].map((d) => ({ value: d, label: `ក្នុង ${d} ថ្ងៃ` }))
+// មូលហេតុធ្វើ/ប្ដូរប័ណ្ណ (backend services/cards.py CARD_REASONS)
+const CARD_REASONS = options({ first: 'ធ្វើលើកដំបូង', promotion: 'ឡើងឋានន្តរស័ក្តិ', position: 'ប្ដូរមុខតំណែង',
+  transfer: 'ផ្លាស់ប្ដូរអង្គភាព', expired: 'ផុតកំណត់', lost: 'បាត់', damaged: 'ខូចខាត', correction: 'កែព័ត៌មានខុស', other: 'ផ្សេងៗ' })
+// a valid card that still shows an old rank / position (ត្រូវធ្វើប័ណ្ណថ្មី)
+const CARD_OUTDATED = options({ yes: 'ទាំងអស់', rank: 'ឡើងស័ក្តិក្រោយថ្ងៃចេញ', position: 'ប្ដូរមុខតំណែងក្រោយថ្ងៃចេញ' })
 const STATUS_TAG = { active: 'danger', expired: 'info', cancelled: 'info', issued: 'success', pending: 'warning', lost: 'danger',
   replaced: 'info', submitted: 'warning', processing: 'primary', done: 'success' }
 const yearFilter = { key: 'year', label: 'ឆ្នាំ', type: 'year', width: '120px' }
@@ -192,14 +197,19 @@ export const configs = {
       { key: 'issue_date', label: 'ថ្ងៃចេញ', type: 'date', width: 110 },
       { key: 'expiry_date', label: 'ថ្ងៃផុតកំណត់', type: 'date', width: 120 },
       { key: 'days_left', label: 'នៅសល់ (ថ្ងៃ)', width: 110, value: (r) => (r.status === 'issued' ? r.days_left : null) },
-      { key: 'status_name', label: 'ស្ថានភាព', width: 120, tag: (r) => STATUS_TAG[r.status] || 'info' }],
+      { key: 'status_name', label: 'ស្ថានភាព', width: 120, tag: (r) => STATUS_TAG[r.status] || 'info' },
+      { key: 'reason_name', label: 'មូលហេតុ', width: 130 },
+      { key: 'outdated_text', label: 'ត្រូវធ្វើប័ណ្ណថ្មី', minWidth: 170 }],
     filters: [{ key: 'status', label: 'ស្ថានភាព', type: 'select', width: '140px', options: CARD_STATUS },
       { key: 'expiring_within', label: 'ផុតកំណត់', type: 'select', width: '140px', options: EXPIRING },
+      { key: 'outdated', label: 'ត្រូវធ្វើប័ណ្ណថ្មី', type: 'select', width: '190px', options: CARD_OUTDATED },
+      { key: 'reason', label: 'មូលហេតុ', type: 'select', width: '150px', options: CARD_REASONS },
       { key: 'date_from', label: 'ចេញពី', type: 'date', width: '150px' }, { key: 'date_to', label: 'ដល់', type: 'date', width: '150px' }],
     fields: [soldierField,
       { key: 'card_no', label: 'លេខប័ណ្ណ', span: 12 },
       { key: 'status', label: 'ស្ថានភាព', type: 'select', required: true, default: 'pending', span: 12,
         options: CARD_STATUS.filter((o) => o.value !== 'expired') },
+      { key: 'reason', label: 'មូលហេតុធ្វើ / ប្ដូរប័ណ្ណ', type: 'select', span: 12, options: CARD_REASONS },
       { key: 'issue_date', label: 'ថ្ងៃចេញ', type: 'date', span: 12 },
       { key: 'expiry_date', label: 'ថ្ងៃផុតកំណត់', type: 'date', span: 12 },
       { key: 'notes', label: 'កំណត់សម្គាល់', type: 'textarea' }],

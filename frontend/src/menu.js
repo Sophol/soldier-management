@@ -55,6 +55,7 @@ export const menu = [
   { key: 'idCards', icon: 'Postcard', to: '/id-cards', perm: 'id_cards.view' },
   { key: 'retirement', icon: 'Calendar', to: '/retirement', perm: 'retirement.view' },
   { key: 'separation', icon: 'Remove', to: '/separation', perm: 'separation.view' },
+  { key: 'policy', icon: 'House', to: '/policy', perm: 'soldiers.view' },
   { key: 'reports', icon: 'DataAnalysis', to: '/reports', perm: 'reports.view' },
   {
     key: 'settings', icon: 'Setting', children: [

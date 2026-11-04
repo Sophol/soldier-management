@@ -6,7 +6,7 @@ from app.api.v1 import conscripts, decisions, documents, master, records, report
 from app.core.config import settings
 from app.core.database import engine
 
-app = FastAPI(title="Soldier Management API", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(title="Soldier Management API", version="1.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,4 +27,4 @@ app.include_router(api)
 def health():
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
-    return {"status": "ok"}
+    return {"status": "ok", "version": app.version}

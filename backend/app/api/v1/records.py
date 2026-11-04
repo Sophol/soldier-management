@@ -36,6 +36,7 @@ from app.schemas import (
     StrengthIn,
     TrainingCourseIn,
 )
+from app.services.cards import CARD_REASONS, CARD_STATUS, OUTDATED, card_status, outdated_card_clause, outdated_reasons
 from app.services.common import audit, check_unit_in_scope, scope_unit_ids, to_dict
 from app.services.soldier import (
     add_movement,
@@ -394,21 +395,13 @@ router.include_router(crud_router(
 
 # ---------------- military ID cards (ការងារអត្តសញ្ញាណប័ណ្ណយោធិន) ----------------
 
-CARD_STATUS = {"issued": "ចេញរួច", "pending": "មិនទាន់ចេញ", "expired": "ផុតកំណត់", "lost": "បាត់", "replaced": "ជំនួស"}
-
-
-def card_status(c: MilitaryCard) -> str:
-    """An issued card past its expiry date is expired (ផុតកំណត់)."""
-    if c.status == "issued" and c.expiry_date and c.expiry_date < date.today():
-        return "expired"
-    return c.status
-
-
 def card_out(c: MilitaryCard) -> dict:
     st = card_status(c)
     days = (c.expiry_date - date.today()).days if c.expiry_date else None
+    outdated = outdated_reasons(c)
     return {**to_dict(c), **soldier_brief(c.soldier), "status": st, "stored_status": c.status,
-            "status_name": CARD_STATUS[st], "days_left": days}
+            "status_name": CARD_STATUS[st], "days_left": days, "reason_name": CARD_REASONS.get(c.reason or "", ""),
+            "outdated": outdated, "outdated_text": ", ".join(OUTDATED[k] for k in outdated)}
 
 
 def _card_status_filter(stmt, v):
@@ -430,6 +423,11 @@ def _card_expiring_filter(stmt, v):
                       MilitaryCard.expiry_date.between(today, today + timedelta(days=int(v))))
 
 
+def _card_outdated_filter(stmt, v):
+    """ត្រូវធ្វើប័ណ្ណថ្មី: rank / position / any (yes) change after the card was issued."""
+    return stmt.where(outdated_card_clause(v if v in OUTDATED else None))
+
+
 def _card_before(db, user, obj, data, is_new):
     _soldier_hook(db, user, obj, data, is_new)
     if data.get("status") == "expired":  # computed, never stored
@@ -443,7 +441,8 @@ router.include_router(crud_router(
     search_fields=(MilitaryCard.card_no, MilitaryCard.notes),
     filter_fields={"soldier_id": MilitaryCard.soldier_id,
                    "date_from": MilitaryCard.issue_date, "date_to": MilitaryCard.issue_date},
-    custom_filters={"status": _card_status_filter, "expiring_within": _card_expiring_filter},
+    custom_filters={"status": _card_status_filter, "expiring_within": _card_expiring_filter,
+                    "outdated": _card_outdated_filter, "reason": lambda stmt, v: stmt.where(MilitaryCard.reason == v)},
     order_by=(MilitaryCard.issue_date.desc(), MilitaryCard.id.desc()),
     serialize=card_out, base_query=scoped(MilitaryCard), before_save=_card_before, tags=["id cards"],
 ))

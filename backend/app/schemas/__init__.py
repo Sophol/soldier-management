@@ -504,6 +504,9 @@ class MilitaryCardIn(In):
     soldier_id: int
     card_no: str | None = None
     status: Literal["issued", "pending", "lost", "replaced"] = "pending"
+    # មូលហេតុធ្វើ/ប្ដូរប័ណ្ណ (keys of records.CARD_REASONS)
+    reason: Literal["first", "promotion", "position", "transfer", "expired", "lost", "damaged", "correction",
+                    "other"] | None = None
     issue_date: date | None = None
     expiry_date: date | None = None
     notes: str | None = None

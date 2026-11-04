@@ -32,7 +32,7 @@ const blank = {
   base_province_id: null, base_district_id: null, voting_province_id: null, voting_district_id: null,
   dob_from: null, dob_to: null, enlist_from: null, enlist_to: null, rank_date_from: null, rank_date_to: null,
   position_date_from: null, position_date_to: null, service_min: null, service_max: null, in_rank_min: null,
-  in_position_min: null, missing: [], has_attachments: null, retire_within: null, promotion_due: false, serving: false,
+  in_position_min: null, missing: [], has_attachments: null, card: null, retire_within: null, promotion_due: false, serving: false,
   created_by: null, created_from: null, created_to: null, updated_from: null, updated_to: null,
 }
 const f = reactive(structuredClone(blank))
@@ -47,6 +47,8 @@ const MISSING = [
   { value: 'national_id', label: 'ខ្វះលេខអត្តសញ្ញាណប័ណ្ណ' }, { value: 'unit', label: 'មិនទាន់មានអង្គភាព' },
   { value: 'phone', label: 'ខ្វះលេខទូរស័ព្ទ' }, { value: 'attachments', label: 'ខ្វះឯកសារភ្ជាប់' },
 ]
+// អត្តសញ្ញាណប័ណ្ណយោធិន (backend services/cards.py soldier_card_clause)
+const CARD = [{ value: 'none', label: 'មិនទាន់មានប័ណ្ណកំពុងប្រើ' }, { value: 'outdated', label: 'ត្រូវធ្វើប័ណ្ណថ្មី (ស័ក្តិ/មុខតំណែងប្ដូរ)' }]
 const BRANCHES = [{ value: 'army', label: 'ស័ក្តិជើងគោក' }, { value: 'navy', label: 'ស័ក្តិកងទ័ពជើងទឹក' }]
 const RETIRE = [1, 2, 5]
 const HOUSING = [{ value: 'own', label: 'ផ្ទះផ្ទាល់' }, { value: 'rent', label: 'ជួល' }, { value: 'stay', label: 'ស្នាក់' }]
@@ -159,6 +161,7 @@ const chips = computed(() => {
   if (f.promotion_due) add(['promotion_due'], 'គ្រប់ឆ្នាំឡើងស័ក្តិ', 'បាទ')
   for (const m of f.missing) add([`missing:${m}`], 'ទិន្នន័យខ្វះ', MISSING.find((x) => x.value === m)?.label)
   if (f.has_attachments) add(['has_attachments'], 'ឯកសារភ្ជាប់', f.has_attachments === 'yes' ? 'មាន' : 'ខ្វះ')
+  if (f.card) add(['card'], 'ប័ណ្ណយោធិន', CARD.find((x) => x.value === f.card)?.label)
   if (f.section_id) add(['section_id'], 'ផ្នែក', lookups.name('specialty_section', f.section_id))
   if (f.specialty_id) add(['specialty_id'], 'ជំនាញ', lookups.name('specialties', f.specialty_id))
   if (f.education_level_id) add(['education_level_id'], 'កម្រិតវប្បធម៌', lookups.name('education_level', f.education_level_id))
@@ -360,6 +363,11 @@ onMounted(async () => {
               <el-col :xs="12" :md="4"><el-form-item label="ស្ថានភាពឯកសារភ្ជាប់">
                 <el-select v-model="f.has_attachments" clearable>
                   <el-option value="yes" label="មានឯកសារភ្ជាប់" /><el-option value="no" label="ខ្វះឯកសារភ្ជាប់" />
+                </el-select>
+              </el-form-item></el-col>
+              <el-col :xs="12" :md="4"><el-form-item label="អត្តសញ្ញាណប័ណ្ណយោធិន">
+                <el-select v-model="f.card" clearable>
+                  <el-option v-for="o in CARD" :key="o.value" :value="o.value" :label="o.label" />
                 </el-select>
               </el-form-item></el-col>
             </el-row>
