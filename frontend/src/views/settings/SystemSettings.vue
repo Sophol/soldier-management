@@ -17,11 +17,20 @@ const LABELS = {
   retirement_age_female: 'អាយុចូលនិវត្តន៍ — ស្រី',
   alert_months_ahead: 'ជូនដំណឹងនិវត្តន៍មុន (ខែ)',
   workflow_overdue_days: 'សេចក្ដីសម្រេចនៅជាប់ដំណាក់កាលអនុម័តយូរបំផុត (ថ្ងៃ) មុនជូនដំណឹង',
+  // shown on the About page (អំពីយើង → ទំនាក់ទំនង / សៀវភៅណែនាំ)
+  contact_name: 'ទំនាក់ទំនង — អង្គភាព/អ្នកទទួលបន្ទុកប្រព័ន្ធ',
+  contact_phone: 'ទំនាក់ទំនង — លេខទូរស័ព្ទ',
+  contact_email: 'ទំនាក់ទំនង — អ៊ីមែល',
+  contact_address: 'ទំនាក់ទំនង — អាសយដ្ឋាន',
+  manual_url: 'តំណសៀវភៅណែនាំពេញលេញ (PDF/URL ចាប់ផ្ដើមដោយ https://) — ទុកទំនេរបើគ្មាន',
 }
+// the About page settings are listed even before the seed adds them (saving creates them)
+const ABOUT_KEYS = ['contact_name', 'contact_phone', 'contact_email', 'contact_address', 'manual_url']
 
 onMounted(async () => {
   const { data } = await http.get('/settings')
   items.value = Object.entries(data).map(([key, v]) => ({ key, value: v.value, description: v.description }))
+  for (const key of ABOUT_KEYS) if (!(key in data)) items.value.push({ key, value: '', description: '' })
 })
 
 async function uploadLogo({ file }) {
