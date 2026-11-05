@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import http from '@/api/http'
+import http, { download, downloadPost } from '@/api/http'
 import { useAuth } from '@/stores/auth'
 import { useLookups } from '@/stores/lookups'
 import SoldierSelect from '@/components/SoldierSelect.vue'
@@ -72,7 +72,23 @@ const saving = ref(false)
 const form = ref({})
 const formRef = ref()
 const detail = ref(null)
+// ព័ត៌មានខុសប្រក្រតី: about the decision itself (dates) above the table, and per soldier next to the new unit
 const warnings = ref([])
+const itemWarnings = ref({}) // soldier_id -> [messages]
+// what saving would refuse (missing choice, lower rank, full staffing slot / rank quota...), shown in the same place
+const itemErrors = ref({}) // soldier_id -> [messages]
+const warnedCount = computed(() => form.value.items?.filter((i) => itemWarnings.value[i.soldier_id]?.length).length || 0)
+const errorCount = computed(() => form.value.items?.filter((i) => itemErrors.value[i.soldier_id]?.length).length || 0)
+function setWarnings(general, items) {
+  warnings.value = general || []
+  itemWarnings.value = Object.fromEntries((items || []).map((i) => [i.soldier_id, i.warnings ?? i.anomalies ?? []]))
+  itemErrors.value = Object.fromEntries((items || []).map((i) => [i.soldier_id, i.errors ?? []]))
+}
+const warnRow = ({ row }) => (itemErrors.value[row.soldier_id]?.length ? 'error-row'
+  : itemWarnings.value[row.soldier_id]?.length ? 'warn-row' : '')
+// anomalies are checked only while the decision can still change something (the server sends none afterwards)
+const anomaliesChecked = (d) => WORKFLOW.slice(0, -1).some((w) => w.status === d.status)
+const detailWarned = computed(() => detail.value?.items.filter((i) => i.anomalies?.length).length || 0)
 
 // the decision number is usually known only once signed: it can be left empty and given when publishing
 const rules = {
@@ -113,7 +129,7 @@ function openCreate() {
     id: null, decision_no: '', decision_date: today, effective_date: today, issued_by: '', notes: '',
     incoming_document_id: null, incoming_label: '', items: [emptyItem()],
   }
-  warnings.value = []
+  setWarnings([], [])
   dialog.value = true
 }
 
@@ -133,26 +149,31 @@ async function openEdit(row) {
       new_position_id: i.new_position_id, new_institution_id: institutionOf(i.new_unit_id), new_unit_id: i.new_unit_id, note: i.note,
     })),
   }
-  warnings.value = []
+  setWarnings(data.general_anomalies, data.items)
   dialog.value = true
+}
+
+// the form as the API takes it (save, live check and the Excel of the form use the same body)
+function formPayload() {
+  return {
+    kind: kind.value, decision_no: form.value.decision_no, decision_date: form.value.decision_date,
+    effective_date: form.value.effective_date, issued_by: form.value.issued_by, notes: form.value.notes,
+    incoming_document_id: form.value.incoming_document_id,
+    items: form.value.items.filter((i) => i.soldier_id)
+      .map(({ soldier_id, new_rank_id, new_position_id, new_unit_id, note }) => ({ soldier_id, new_rank_id, new_position_id, new_unit_id, note })),
+  }
 }
 
 async function save() {
   await formRef.value.validate()
-  const items = form.value.items.filter((i) => i.soldier_id)
-  if (!items.length) return ElMessage.warning('សូមបន្ថែមយោធិនយ៉ាងហោចណាស់ម្នាក់')
+  const payload = formPayload()
+  if (!payload.items.length) return ElMessage.warning('សូមបន្ថែមយោធិនយ៉ាងហោចណាស់ម្នាក់')
   saving.value = true
   try {
-    const payload = {
-      kind: kind.value, decision_no: form.value.decision_no, decision_date: form.value.decision_date,
-      effective_date: form.value.effective_date, issued_by: form.value.issued_by, notes: form.value.notes,
-      incoming_document_id: form.value.incoming_document_id,
-      items: items.map(({ soldier_id, new_rank_id, new_position_id, new_unit_id, note }) => ({ soldier_id, new_rank_id, new_position_id, new_unit_id, note })),
-    }
     const { data } = form.value.id ? await http.put(`/decisions/${form.value.id}`, payload) : await http.post('/decisions', payload)
     if (data.warnings?.length) {
-      warnings.value = data.warnings
-      ElMessage.warning('បានរក្សាទុក ប៉ុន្តែមានការព្រមាន')
+      setWarnings(data.general_anomalies, data.items)
+      ElMessage.warning('បានរក្សាទុក ប៉ុន្តែមានព័ត៌មានខុសប្រក្រតី (មើលខាងលើតារាង និងនៅជាប់អង្គភាពថ្មីរបស់យោធិនម្នាក់ៗ)')
       form.value.id = data.id
     } else {
       ElMessage.success('បានរក្សាទុកជាសេចក្ដីព្រាង')
@@ -167,25 +188,44 @@ async function save() {
 // ព័ត៌មានខុសប្រក្រតី: re-checked on the server while the form is typed (warnings never block saving)
 let checkTimer = null
 let checkSeq = 0
-watch(() => dialog.value && [form.value.decision_date, form.value.effective_date,
+watch(() => dialog.value && [form.value.decision_no, form.value.decision_date, form.value.effective_date, form.value.incoming_document_id,
   form.value.items?.map((i) => [i.soldier_id, i.new_rank_id, i.new_position_id, i.new_unit_id])], (on) => {
   clearTimeout(checkTimer)
   if (!on) return
   checkTimer = setTimeout(async () => {
     const seq = ++checkSeq
-    const items = form.value.items.filter((i) => i.soldier_id)
-      .map(({ soldier_id, new_rank_id, new_position_id, new_unit_id }) => ({ soldier_id, new_rank_id, new_position_id, new_unit_id }))
     try {
-      const { data } = await http.post('/decisions/check', {
-        id: form.value.id, kind: kind.value, decision_date: form.value.decision_date, effective_date: form.value.effective_date, items,
-      }, { silent: true })
-      if (seq === checkSeq) warnings.value = data.warnings
+      const { data } = await http.post('/decisions/check', { id: form.value.id, ...formPayload() }, { silent: true })
+      if (seq === checkSeq) setWarnings(data.general ?? data.warnings, data.items)
     } catch { /* a failed check only means no warnings are shown; saving still validates */ }
   }, 400)
 }, { deep: true })
 
+// the proposal as it stands in the form (saved or not) as an Excel file, with each soldier's anomalies and errors
+async function exportForm() {
+  const payload = formPayload()
+  if (!payload.items.length) return ElMessage.warning('សូមបន្ថែមយោធិនយ៉ាងហោចណាស់ម្នាក់')
+  downloading.value = true
+  try {
+    await downloadPost('/decisions/export-preview', { id: form.value.id, ...payload }, `decision-${kind.value}.xlsx`)
+  } finally {
+    downloading.value = false
+  }
+}
+
 async function showDetail(row) {
   detail.value = (await http.get(`/decisions/${row.id}`)).data
+}
+
+// the proposal (សំណើ) as an Excel file: details and one row per soldier, with each soldier's anomalies
+const downloading = ref(false)
+async function exportDecision(d) {
+  downloading.value = true
+  try {
+    await download(`/decisions/${d.id}/export`, {}, `decision-${d.id}.xlsx`)
+  } finally {
+    downloading.value = false
+  }
 }
 
 // workflow buttons: the server sends the actions this user may do now (row.actions)
@@ -238,6 +278,17 @@ async function act(row, action) {
   const m = ACTIONS[action]
   // the director's approval is final: it registers the letter and updates the records
   if (action === 'approve' && row.status === 'submitted') return openPublish(row)
+  // sending on or approving a decision with anomalies: the user confirms having seen them
+  if (['submit', 'approve'].includes(action) && row.anomalies?.length) {
+    await ElMessageBox.confirm(
+      `សេចក្ដីសម្រេចនេះមានព័ត៌មានខុសប្រក្រតី ${num(row.anomalies.length)}៖\n\n${row.anomalies.map((a) => `• ${a}`).join('\n')}\n\nនៅតែ${m.label}?`,
+      'ព័ត៌មានខុសប្រក្រតី', { type: 'warning', confirmButtonText: m.label, cancelButtonText: 'បោះបង់', customClass: 'pre-line-box' })
+    if (m.confirm) {
+      await http.post(`/decisions/${row.id}/${action}`, { comment: null })
+      ElMessage.success('រួចរាល់')
+      return afterAction(row)
+    }
+  }
   let comment = null
   if (m.prompt) {
     const { value } = await ElMessageBox.prompt(m.prompt, m.label, {
@@ -400,6 +451,9 @@ onMounted(load)
           <template #default="{ row }">
             <el-button link type="primary" icon="View" @click="showDetail(row)" />
             <el-button link icon="Printer" @click="router.push(`/decisions/${row.id}/print`)" />
+            <el-tooltip v-if="auth.can(`${module}.export`)" content="ទាញយកសំណើ (Excel)">
+              <el-button link icon="Download" @click="exportDecision(row)" />
+            </el-tooltip>
             <el-button v-if="row.actions.includes('edit')" link type="primary" icon="Edit" @click="openEdit(row)" />
             <el-button v-for="a in workflowActions(row)" :key="a" link :type="ACTIONS[a].type" :icon="ACTIONS[a].icon" @click="act(row, a)">{{ ACTIONS[a].label }}</el-button>
             <el-button v-if="row.actions.includes('delete')" link type="danger" icon="Delete" @click="remove(row)" />
@@ -411,7 +465,7 @@ onMounted(load)
     </el-card>
 
     <!-- create / edit -->
-    <el-dialog v-model="dialog" :title="(form.id ? 'កែប្រែ' : 'បង្កើត') + ' សេចក្ដីសម្រេច ' + TITLES[kind]" width="1100px"
+    <el-dialog v-model="dialog" :title="(form.id ? 'កែប្រែ' : 'បង្កើត') + ' សេចក្ដីសម្រេច ' + TITLES[kind]" width="min(1400px, 96vw)"
                :close-on-click-modal="false" destroy-on-close>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
         <el-row :gutter="14">
@@ -423,9 +477,15 @@ onMounted(load)
             <DocumentSelect v-model="form.incoming_document_id" :initial-label="form.incoming_label" />
           </el-form-item></el-col>
         </el-row>
-        <div v-if="warnings.length" class="section-title">ព័ត៌មានខុសប្រក្រតី ({{ num(warnings.length) }})</div>
-        <el-alert v-for="w in warnings" :key="w" :title="w" type="warning" show-icon :closable="false" style="margin-bottom: 6px" />
-        <el-table :data="form.items" border size="small">
+        <template v-if="warnings.length || warnedCount || errorCount">
+          <div class="section-title">ព័ត៌មានខុសប្រក្រតី</div>
+          <el-alert v-for="w in warnings" :key="w" :title="w" type="warning" show-icon :closable="false" style="margin-bottom: 6px" />
+          <el-alert v-if="errorCount" type="error" show-icon :closable="false" style="margin-bottom: 6px"
+                    :title="`យោធិន ${num(errorCount)} នាក់ មិនអាចរក្សាទុកបាន (ក្របខណ្ឌ ឋានន្តរស័ក្តិ ...) — មើលពណ៌ក្រហមនៅជាប់អង្គភាពថ្មី`" />
+          <el-alert v-if="warnedCount" type="warning" show-icon :closable="false" style="margin-bottom: 6px"
+                    :title="`យោធិន ${num(warnedCount)} នាក់ មានព័ត៌មានខុសប្រក្រតី — មើលនៅជួរឈរ «ព័ត៌មានខុសប្រក្រតី» ជាប់អង្គភាពថ្មី`" />
+        </template>
+        <el-table :data="form.items" border size="small" :row-class-name="warnRow">
           <el-table-column label="យោធិន" min-width="260">
             <template #default="{ row }">
               <SoldierSelect v-model="row.soldier_id" :initial-label="row.label" @select="(s) => (row.soldier = s)" />
@@ -464,6 +524,16 @@ onMounted(load)
           <el-table-column v-if="showUnit" label="អង្គភាពថ្មី" width="220">
             <template #default="{ row }"><UnitTreeSelect :model-value="row.new_unit_id" :root-id="row.new_institution_id" @update:model-value="(v) => setUnit(row, v)" /></template>
           </el-table-column>
+          <!-- per soldier, next to the new unit (checked on the server while typing) -->
+          <el-table-column label="ព័ត៌មានខុសប្រក្រតី" min-width="240">
+            <template #default="{ row }">
+              <ul v-if="itemErrors[row.soldier_id]?.length || itemWarnings[row.soldier_id]?.length" class="anomalies">
+                <li v-for="e in itemErrors[row.soldier_id]" :key="`e-${e}`" class="error"><el-icon><CircleCloseFilled /></el-icon> {{ e }}</li>
+                <li v-for="w in itemWarnings[row.soldier_id]" :key="`w-${w}`"><el-icon><WarningFilled /></el-icon> {{ w }}</li>
+              </ul>
+              <span v-else-if="row.soldier_id" class="ok"><el-icon><CircleCheckFilled /></el-icon> គ្មាន</span>
+            </template>
+          </el-table-column>
           <el-table-column label="កំណត់សម្គាល់" width="150"><template #default="{ row }"><el-input v-model="row.note" /></template></el-table-column>
           <el-table-column width="50"><template #default="{ $index }"><el-button link type="danger" icon="Delete" @click="form.items.splice($index, 1)" /></template></el-table-column>
         </el-table>
@@ -471,6 +541,7 @@ onMounted(load)
         <el-form-item label="កំណត់សម្គាល់" style="margin-top: 12px"><el-input v-model="form.notes" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer>
+        <el-button v-if="auth.can(`${module}.export`)" icon="Download" :loading="downloading" class="footer-left" @click="exportForm">ទាញយក Excel</el-button>
         <el-button @click="dialog = false">បិទ</el-button>
         <el-button type="primary" :loading="saving" @click="save">រក្សាទុកជាសេចក្ដីព្រាង</el-button>
       </template>
@@ -494,22 +565,42 @@ onMounted(load)
                   finish-status="success" align-center class="wf-steps">
           <el-step v-for="w in WORKFLOW" :key="w.status" :title="w.step" />
         </el-steps>
-        <template v-if="detail.anomalies.length">
-          <div class="section-title">ព័ត៌មានខុសប្រក្រតី ({{ num(detail.anomalies.length) }})</div>
-          <el-alert v-for="a in detail.anomalies" :key="a" :title="a" type="warning" show-icon :closable="false" style="margin-bottom: 6px" />
+        <template v-if="detail.general_anomalies?.length || detailWarned">
+          <div class="section-title">ព័ត៌មានខុសប្រក្រតី</div>
+          <el-alert v-for="a in detail.general_anomalies" :key="a" :title="a" type="warning" show-icon :closable="false" style="margin-bottom: 6px" />
+          <el-alert v-if="detailWarned" type="warning" show-icon :closable="false" style="margin-bottom: 6px"
+                    :title="`យោធិន ${num(detailWarned)} នាក់ មានព័ត៌មានខុសប្រក្រតី — មើលនៅជួរឈរជាប់អង្គភាពថ្មី`" />
         </template>
-        <el-table :data="detail.items" border size="small" style="margin-top: 14px">
+        <!-- a value that does not change is shown as it is (no empty cell); a change as old → new -->
+        <el-table :data="detail.items" border size="small" style="margin-top: 14px"
+                  :row-class-name="({ row }) => (row.anomalies?.length ? 'warn-row' : '')">
           <el-table-column type="index" label="ល.រ" width="55" />
           <el-table-column prop="military_id" label="អត្តលេខ" width="100" />
           <el-table-column prop="name_kh" label="គោត្តនាមនិងនាម" min-width="140" />
-          <el-table-column v-if="detail.kind !== 'appoint'" label="ឋានន្តរស័ក្តិ" min-width="200"><template #default="{ row }"><span v-if="row.new_rank_id">{{ row.old_rank }} → <b>{{ row.new_rank }}</b></span></template></el-table-column>
-          <el-table-column v-if="detail.kind !== 'promote'" label="មុខតំណែង" min-width="200"><template #default="{ row }"><span v-if="row.new_position_id">{{ row.old_position || '-' }} → <b>{{ row.new_position }}</b></span></template></el-table-column>
-          <el-table-column label="ស្ថាប័នកងឯកភាព" min-width="180"><template #default="{ row }">
-            <span v-if="row.new_unit_id && row.new_institution !== row.old_institution">{{ row.old_institution || '-' }} → <b>{{ row.new_institution }}</b></span>
-            <span v-else>{{ row.old_institution }}</span>
+          <el-table-column label="ឋានន្តរស័ក្តិ" min-width="190"><template #default="{ row }">
+            <span v-if="row.new_rank_id">{{ row.old_rank || '-' }} → <b>{{ row.new_rank }}</b></span>
+            <span v-else>{{ row.old_rank || '-' }}</span>
           </template></el-table-column>
-          <el-table-column v-if="detail.kind !== 'promote'" label="អង្គភាព" min-width="200"><template #default="{ row }"><span v-if="row.new_unit_id">{{ row.old_unit || '-' }} → <b>{{ row.new_unit }}</b></span></template></el-table-column>
-          <el-table-column prop="note" label="កំណត់សម្គាល់" />
+          <el-table-column label="មុខតំណែង" min-width="190"><template #default="{ row }">
+            <span v-if="row.new_position_id">{{ row.old_position || '-' }} → <b>{{ row.new_position }}</b></span>
+            <span v-else>{{ row.old_position || '-' }}</span>
+          </template></el-table-column>
+          <el-table-column label="ស្ថាប័នកងឯកភាព" min-width="170"><template #default="{ row }">
+            <span v-if="row.new_unit_id && row.new_institution !== row.old_institution">{{ row.old_institution || '-' }} → <b>{{ row.new_institution }}</b></span>
+            <span v-else>{{ row.old_institution || '-' }}</span>
+          </template></el-table-column>
+          <el-table-column :label="detail.kind === 'promote' ? 'អង្គភាព' : 'អង្គភាព (ចាស់ → ថ្មី)'" min-width="200"><template #default="{ row }">
+            <span v-if="row.new_unit_id">{{ row.old_unit || '-' }} → <b>{{ row.new_unit }}</b></span>
+            <span v-else>{{ row.old_unit || '-' }}</span>
+          </template></el-table-column>
+          <!-- per soldier, next to the new unit; checked only while the decision can still change something -->
+          <el-table-column v-if="anomaliesChecked(detail)" label="ព័ត៌មានខុសប្រក្រតី" min-width="240"><template #default="{ row }">
+            <ul v-if="row.anomalies?.length" class="anomalies">
+              <li v-for="a in row.anomalies" :key="a"><el-icon><WarningFilled /></el-icon> {{ a }}</li>
+            </ul>
+            <span v-else class="ok"><el-icon><CircleCheckFilled /></el-icon> គ្មាន</span>
+          </template></el-table-column>
+          <el-table-column prop="note" label="កំណត់សម្គាល់" min-width="120" />
         </el-table>
         <div class="section-title">កំណត់ត្រាអនុម័ត</div>
         <el-timeline v-if="detail.steps?.length">
@@ -524,6 +615,7 @@ onMounted(load)
         <FileAttachments owner-type="decision" :owner-id="detail.id" :editable="auth.can(`${module}.update`)" />
         <div class="drawer-actions">
           <el-button icon="Printer" @click="router.push(`/decisions/${detail.id}/print`)">បោះពុម្ព</el-button>
+          <el-button v-if="auth.can(`${module}.export`)" icon="Download" :loading="downloading" @click="exportDecision(detail)">ទាញយកសំណើ (Excel)</el-button>
           <el-button v-for="a in workflowActions(detail)" :key="a" :type="ACTIONS[a].type" :icon="ACTIONS[a].icon" @click="act(detail, a)">{{ ACTIONS[a].label }}</el-button>
         </div>
       </template>
@@ -534,6 +626,10 @@ onMounted(load)
       <template v-if="publishing">
         <el-alert type="info" show-icon :closable="false" style="margin-bottom: 12px"
                   title="ការអនុម័តនេះជាការសម្រេចចុងក្រោយ៖ ប្រព័ន្ធនឹងចុះលេខលិខិតចេញ ហើយធ្វើបច្ចុប្បន្នភាពប្រវត្តិរូបយោធិនទាំងអស់។" />
+        <el-alert v-if="publishing.row.anomalies?.length" type="warning" show-icon :closable="false" style="margin-bottom: 12px"
+                  :title="`មានព័ត៌មានខុសប្រក្រតី ${num(publishing.row.anomalies.length)}`">
+          <ul class="anomalies"><li v-for="a in publishing.row.anomalies" :key="a">{{ a }}</li></ul>
+        </el-alert>
         <el-form label-position="top">
           <el-form-item label="លេខសេចក្ដីសម្រេច (ទុកទំនេរ = តាមលេខលិខិតចេញ)"><el-input v-model="publishing.decision_no" /></el-form-item>
           <el-form-item label="ថ្ងៃចុះហត្ថលេខា"><el-date-picker v-model="publishing.decision_date" value-format="YYYY-MM-DD" format="DD/MM/YYYY" style="width: 100%" /></el-form-item>
@@ -557,4 +653,15 @@ onMounted(load)
 .unit-pair > :not(.arrow) { flex: 1; min-width: 0; }
 .wf-steps { margin-top: 16px; }
 .comment { margin-top: 4px; padding: 6px 10px; background: var(--el-fill-color-light); border-radius: 4px; white-space: pre-line; }
+/* ព័ត៌មានខុសប្រក្រតី of one soldier, in the column next to the new unit */
+.anomalies { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.6; color: var(--el-color-warning-dark-2); }
+.anomalies li { display: flex; gap: 4px; align-items: flex-start; }
+.anomalies .el-icon { margin-top: 3px; flex: none; }
+.ok { font-size: 12px; color: var(--el-color-success); display: inline-flex; gap: 4px; align-items: center; }
+:deep(.warn-row) > td.el-table__cell { background: var(--el-color-warning-light-9) !important; }
+/* what saving would refuse, above the warnings of the same soldier */
+.anomalies li.error { color: var(--el-color-danger); font-weight: 600; }
+:deep(.error-row) > td.el-table__cell { background: var(--el-color-danger-light-9) !important; }
+/* the Excel button sits on the left of the dialog footer, away from save / close */
+.footer-left { float: left; }
 </style>

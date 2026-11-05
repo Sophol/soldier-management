@@ -291,11 +291,16 @@ class DecisionIn(In):
 
 
 class DecisionCheckIn(In):
-    """A decision being typed in the form, checked for anomalies before it is saved."""
+    """A decision being typed in the form, checked for anomalies before it is saved (and exported to Excel as it
+    stands, saved or not)."""
     id: int | None = None  # the decision being edited (not counted as "another decision")
     kind: Literal["appoint", "transfer", "promote"]
+    decision_no: str | None = None
     decision_date: date | None = None
     effective_date: date | None = None
+    issued_by: str | None = None
+    incoming_document_id: int | None = None
+    notes: str | None = None
     items: list[DecisionItemIn] = []
 
 
