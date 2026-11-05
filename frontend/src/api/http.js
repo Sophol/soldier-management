@@ -68,10 +68,20 @@ export function errorMessage(error) {
 /** Download a protected file (Bearer token) and save it with its server-side name. */
 export async function download(url, params = {}, fallbackName = 'download') {
   // a large Excel export takes minutes to build: no 60 s limit here (nginx allows these paths 15 minutes)
-  const res = await http.get(url, { params, responseType: 'blob', timeout: 15 * 60 * 1000 })
+  saveBlob(await http.get(url, { params, responseType: 'blob', timeout: 15 * 60 * 1000 }), fallbackName)
+}
+
+/** The same for a file built from data sent in the request body (e.g. a form not saved yet). */
+export async function downloadPost(url, body, fallbackName = 'download') {
+  saveBlob(await http.post(url, body, { responseType: 'blob', timeout: 15 * 60 * 1000 }), fallbackName)
+}
+
+function saveBlob(res, fallbackName) {
+  // filename* (UTF-8, e.g. a name with Khmer digits) wins over the ASCII-only filename
   const cd = res.headers['content-disposition'] || ''
-  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd)
-  const name = m ? decodeURIComponent(m[1]) : fallbackName
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd)
+  const plain = /filename="?([^";]+)"?/i.exec(cd)
+  const name = star ? decodeURIComponent(star[1]) : plain ? plain[1] : fallbackName
   const href = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = href

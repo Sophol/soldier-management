@@ -55,7 +55,8 @@ onMounted(async () => {
             <td class="c">{{ i.gender === 'F' ? 'ស្រី' : 'ប្រុស' }}</td>
             <td v-if="d.kind === 'promote'">{{ i.old_rank }}</td>
             <td v-if="d.kind === 'promote'"><b>{{ i.new_rank }}</b></td>
-            <td v-if="d.kind !== 'promote'">{{ i.old_rank }}</td>
+            <!-- a transfer may also promote: old → new rank -->
+            <td v-if="d.kind !== 'promote'">{{ i.old_rank || '-' }}<template v-if="i.new_rank_id"> → <b>{{ i.new_rank }}</b></template></td>
             <td v-if="d.kind !== 'promote'">{{ [i.old_position, i.old_unit].filter(Boolean).join(' · ') }}</td>
             <td v-if="d.kind !== 'promote'"><b>{{ [i.new_position || i.old_position, i.new_unit || i.old_unit].filter(Boolean).join(' · ') }}</b></td>
           </tr>

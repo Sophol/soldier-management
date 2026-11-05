@@ -10,9 +10,16 @@ history + strength movements. Cancelling an approved decision reverts it (only i
 changed the soldier since).
 """
 
+import re
 from datetime import date, datetime, timedelta
+from io import BytesIO
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -94,6 +101,13 @@ def overdue_cutoff(db: Session) -> datetime:
 def decision_out(db: Session, d: Decision, with_items: bool = True, user: User | None = None,
                  overdue_before: datetime | None = None) -> dict:
     overdue_before = overdue_before or overdue_cutoff(db)
+    # ព័ត៌មានខុសប្រក្រតី: checked only while the decision can still change something (once approved the soldier
+    # has moved on); one list per soldier line (shown next to the new unit) and the decision-level ones
+    live = d.status == "draft" or d.status in IN_PROGRESS
+    general = decision_level_anomalies(db, d.decision_date, d.effective_date, decision_no=d.decision_no,
+                                       incoming_document_id=d.incoming_document_id, decision_id=d.id) if live else []
+    per_item = [item_anomalies(db, d.kind, d.decision_date, d.effective_date, i.soldier, i.new_rank_id,
+                               i.new_position_id, i.new_unit_id, d.id) if live else [] for i in d.items]
     out = {**to_dict(d), "kind_name": DECISION_KINDS.get(d.kind), "item_count": len(d.items),
            "status_name": DECISION_STATUSES.get(d.status, d.status),
            "overdue": d.status in IN_PROGRESS and d.status_changed_at is not None and d.status_changed_at < overdue_before,
@@ -105,8 +119,9 @@ def decision_out(db: Session, d: Decision, with_items: bool = True, user: User |
                DocumentOutgoing.id == d.outgoing_document_id)) if d.outgoing_document_id else None,
            "institutions": sorted({n for i in d.items for n in (institution_name(db, i.old_unit_id),
                                                                  institution_name(db, i.new_unit_id)) if n}),
-           # checked only while the decision can still change something: once approved the soldier has moved on
-           "anomalies": decision_anomalies(db, d) if d.status == "draft" or d.status in IN_PROGRESS else []}
+           "anomalies": general + [f"{soldier_label(i.soldier)}: {m}" for i, msgs in zip(d.items, per_item, strict=True)
+                                   for m in msgs],
+           "general_anomalies": general}
     if with_items:
         ranks = names_by_id(db, Rank, [i.old_rank_id for i in d.items] + [i.new_rank_id for i in d.items])
         poss = names_by_id(db, Position, [i.old_position_id for i in d.items] + [i.new_position_id for i in d.items])
@@ -120,7 +135,8 @@ def decision_out(db: Session, d: Decision, with_items: bool = True, user: User |
             "old_position": poss.get(i.old_position_id), "new_position": poss.get(i.new_position_id),
             "old_unit": units.get(i.old_unit_id), "new_unit": units.get(i.new_unit_id),
             "old_institution": institution_name(db, i.old_unit_id), "new_institution": institution_name(db, i.new_unit_id),
-        } for i in d.items]
+            "anomalies": msgs,
+        } for i, msgs in zip(d.items, per_item, strict=True)]
         out["steps"] = [{**to_dict(st), "user_name": st.user.full_name if st.user else None,
                          "from_name": STATUS_NAMES.get(st.from_status), "to_name": STATUS_NAMES.get(st.to_status)}
                         for st in d.steps]
@@ -148,14 +164,26 @@ def _months(start: date, end: date) -> int:
     return years * 12 + months
 
 
+def soldier_label(s: Soldier) -> str:
+    return f"{s.name_kh} ({s.military_id})"
+
+
 def anomalies(db: Session, kind: str, decision_date: date | None, effective_date: date | None, s: Soldier,
               new_rank_id: int | None, new_position_id: int | None, new_unit_id: int | None,
               decision_id: int | None = None) -> list[str]:
-    """Unusual facts (ព័ត៌មានខុសប្រក្រតី) about one soldier line: shown as warnings, they never block saving or
-    approval. Hard rules (staffing table, higher rank only, ...) are errors in _check_change/_check_staffing."""
+    """item_anomalies, each prefixed with the soldier's name and military ID (for lists that mix soldiers)."""
+    return [f"{soldier_label(s)}: {m}" for m in item_anomalies(
+        db, kind, decision_date, effective_date, s, new_rank_id, new_position_id, new_unit_id, decision_id)]
+
+
+def item_anomalies(db: Session, kind: str, decision_date: date | None, effective_date: date | None, s: Soldier,
+                   new_rank_id: int | None, new_position_id: int | None, new_unit_id: int | None,
+                   decision_id: int | None = None) -> list[str]:
+    """Unusual facts (ព័ត៌មានខុសប្រក្រតី) about one soldier line: shown as warnings next to the soldier's new unit,
+    they never block saving or approval. Hard rules (staffing table, higher rank only, ...) are errors in
+    _check_change/_check_staffing."""
     from app.api.v1.reports import retirement_age  # reports imports this module
 
-    label = f"{s.name_kh} ({s.military_id})"
     out = []
     when = effective_date or date.today()
     if new_rank_id:
@@ -173,13 +201,17 @@ def anomalies(db: Session, kind: str, decision_date: date | None, effective_date
                 if "all" in (r.branch, cur.branch) or r.branch == cur.branch]
             if skipped:
                 out.append(f"ដំឡើងរំលង {len(skipped)} ថ្នាក់ ({', '.join(skipped)})")
-    if new_position_id and new_position_id == s.current_position_id:
+    # the same position in another unit (a transfer) or the same unit with another position (an appointment within
+    # the unit) is normal: a value equal to the current one is flagged only when nothing else changes with it
+    moves = bool(new_unit_id and new_unit_id != s.current_unit_id)
+    new_post = bool(new_position_id and new_position_id != s.current_position_id)
+    if new_position_id and not new_post and not moves and not new_rank_id:
         out.append("មុខតំណែងថ្មី ដូចមុខតំណែងបច្ចុប្បន្ន")
-    elif new_position_id and s.position_date and _months(s.position_date, when) < RECENT_MONTHS:
+    elif new_post and s.position_date and _months(s.position_date, when) < RECENT_MONTHS:
         out.append(f"ទើបតែតែងតាំងមុខតំណែងបច្ចុប្បន្ន មិនទាន់គ្រប់ {RECENT_MONTHS} ខែ")
-    if new_unit_id and new_unit_id == s.current_unit_id:
+    if new_unit_id and not moves and not new_post and not new_rank_id:
         out.append("អង្គភាពថ្មី ដូចអង្គភាពបច្ចុប្បន្ន")
-    elif new_unit_id and s.unit_transfer_date and _months(s.unit_transfer_date, when) < RECENT_MONTHS:
+    elif moves and s.unit_transfer_date and _months(s.unit_transfer_date, when) < RECENT_MONTHS:
         out.append(f"ទើបតែផ្លាស់មកអង្គភាពបច្ចុប្បន្ន មិនទាន់គ្រប់ {RECENT_MONTHS} ខែ")
     if new_unit_id and s.current_unit_id and new_unit_id != s.current_unit_id \
             and institution_name(db, new_unit_id) != institution_name(db, s.current_unit_id):
@@ -208,21 +240,44 @@ def anomalies(db: Session, kind: str, decision_date: date | None, effective_date
         Decision.status.in_(("draft", *IN_PROGRESS)))).all()
     if others:
         out.append(f"មាននៅក្នុងសេចក្ដីសម្រេចផ្សេងទៀតដែលកំពុងដំណើរការ ({len(others)})")
-    return [f"{label}: {m}" for m in out]
-
-
-def decision_level_anomalies(decision_date: date | None, effective_date: date | None) -> list[str]:
-    if decision_date and effective_date and effective_date < decision_date:
-        return ["ថ្ងៃចូលជាធរមាន មុនថ្ងៃចុះសេចក្ដីសម្រេច"]
-    return []
-
-
-def decision_anomalies(db: Session, d: Decision) -> list[str]:
-    out = decision_level_anomalies(d.decision_date, d.effective_date)
-    for i in d.items:
-        out += anomalies(db, d.kind, d.decision_date, d.effective_date, i.soldier, i.new_rank_id,
-                         i.new_position_id, i.new_unit_id, d.id)
     return out
+
+
+def decision_level_anomalies(db: Session, decision_date: date | None, effective_date: date | None, *,
+                             decision_no: str | None = None, incoming_document_id: int | None = None,
+                             decision_id: int | None = None) -> list[str]:
+    """Anomalies of the decision itself (shown above the soldiers): dates, the request it answers, its number."""
+    out = []
+    if decision_date and effective_date and effective_date < decision_date:
+        out.append("ថ្ងៃចូលជាធរមាន មុនថ្ងៃចុះសេចក្ដីសម្រេច")
+    # 001រចនាសម្ព័ន្ធ: a decision answers an incoming request (ឯកសារចូល)
+    if not incoming_document_id:
+        out.append("មិនទាន់ភ្ជាប់ឯកសារចូល (សំណើ)")
+    if decision_no and decision_no.strip() and decision_date:
+        same = db.scalar(select(func.count(Decision.id)).where(
+            Decision.decision_no == decision_no.strip(), Decision.deleted_at.is_(None), Decision.id != (decision_id or 0),
+            Decision.decision_date.between(date(decision_date.year, 1, 1), date(decision_date.year, 12, 31))))
+        if same:
+            out.append(f"លេខសេចក្ដីសម្រេច {decision_no.strip()} មានរួចហើយក្នុងឆ្នាំ {decision_date.year}")
+    return out
+
+
+def item_errors(db: Session, kind: str, s: Soldier, new_rank_id: int | None, new_position_id: int | None,
+                new_unit_id: int | None) -> list[str]:
+    """What saving would refuse for one soldier line (the rules of _validate_items / _check_change), as messages,
+    so the form can show them next to the soldier while it is typed. Staffing comes from staffing_issues."""
+    if kind == "promote" and not new_rank_id:
+        return ["សូមជ្រើសរើសឋានន្តរស័ក្តិថ្មី"]
+    if kind == "appoint" and not new_position_id:
+        return ["សូមជ្រើសរើសមុខតំណែងថ្មី"]
+    if kind == "transfer" and not (new_unit_id or new_position_id or new_rank_id):
+        return ["សូមជ្រើសរើសអង្គភាព មុខតំណែង ឬឋានន្តរស័ក្តិថ្មី"]
+    label = soldier_label(s)
+    try:
+        _check_change(db, s, kind, new_rank_id, new_position_id, new_unit_id, label)
+    except HTTPException as e:
+        return [str(e.detail).removeprefix(f"{label}: ")]
+    return []
 
 
 def _in_scope_condition(db: Session, user: User):
@@ -270,22 +325,28 @@ def _check_change(db: Session, s: Soldier, kind: str, new_rank_id, new_position_
             raise HTTPException(400, f"{label}: មុខតំណែងថ្មីមិនត្រឹមត្រូវ")
 
 
-def _check_staffing(db: Session, kind: str, changes: list[tuple]) -> None:
-    """Refuse the decision when it would break the staffing table or a rank quota.
+def staffing_issues(db: Session, kind: str, changes: list[tuple]) -> list[list[str]]:
+    """Staffing table / rank quota problems (ក្របខណ្ឌ), one list per change, each message starting with its label.
     changes: [(soldier, new_rank_id, new_position_id, new_unit_id, label)]; soldiers of the same decision going
     into the same slot or rank are counted together."""
-    problems, slots, ranks = [], {}, {}
+    out, slots, ranks = [], {}, {}
     for s, new_rank_id, new_position_id, new_unit_id, label in changes:
         unit_id, position_id = new_unit_id or s.current_unit_id, new_position_id or s.current_position_id
         slot_changes = bool(new_position_id or new_unit_id)
         rank_id = (new_rank_id if kind == "promote" or new_rank_id else None) or s.current_rank_id
-        problems += staffing_problems(db, s, unit_id=unit_id, position_id=position_id, rank_id=rank_id,
-                                      slot_changes=slot_changes, rank_changes=bool(new_rank_id), label=label,
-                                      planned_slot=slots.get((unit_id, position_id), 0), planned_rank=ranks.get(rank_id, 0))
+        out.append(staffing_problems(db, s, unit_id=unit_id, position_id=position_id, rank_id=rank_id,
+                                     slot_changes=slot_changes, rank_changes=bool(new_rank_id), label=label,
+                                     planned_slot=slots.get((unit_id, position_id), 0), planned_rank=ranks.get(rank_id, 0)))
         if slot_changes:
             slots[(unit_id, position_id)] = slots.get((unit_id, position_id), 0) + 1
         if new_rank_id:
             ranks[rank_id] = ranks.get(rank_id, 0) + 1
+    return out
+
+
+def _check_staffing(db: Session, kind: str, changes: list[tuple]) -> None:
+    """Refuse the decision when it would break the staffing table or a rank quota."""
+    problems = [p for ps in staffing_issues(db, kind, changes) for p in ps]
     if problems:
         raise HTTPException(400, "មិនស្របនឹងក្របខណ្ឌ៖\n" + "\n".join(problems))
 
@@ -293,7 +354,8 @@ def _check_staffing(db: Session, kind: str, changes: list[tuple]) -> None:
 def _validate_items(db: Session, user: User, payload: DecisionIn,
                     decision_id: int | None = None) -> tuple[list[DecisionItem], list[str]]:
     items, seen, changes = [], set(), []
-    warnings = decision_level_anomalies(payload.decision_date, payload.effective_date)
+    warnings = decision_level_anomalies(db, payload.decision_date, payload.effective_date, decision_no=payload.decision_no,
+                                        incoming_document_id=payload.incoming_document_id, decision_id=decision_id)
     scope = scope_unit_ids(db, user)
     for it in payload.items:
         if it.soldier_id in seen:
@@ -304,7 +366,7 @@ def _validate_items(db: Session, user: User, payload: DecisionIn,
             raise HTTPException(400, f"រកមិនឃើញយោធិន id={it.soldier_id}")
         if scope is not None and s.current_unit_id not in scope:
             raise HTTPException(403, f"{s.name_kh}: នៅក្រៅសិទ្ធិរបស់អ្នក")
-        label = f"{s.name_kh} ({s.military_id})"
+        label = soldier_label(s)
         new_rank_id = it.new_rank_id if payload.kind in ("promote", "transfer") else None
         if payload.kind == "promote" and not new_rank_id:
             raise HTTPException(400, f"{label}: សូមជ្រើសរើសឋានន្តរស័ក្តិថ្មី")
@@ -395,19 +457,208 @@ def get_decision(decision_id: int, db: Session = Depends(get_db), user: User = D
     return decision_out(db, d, user=user)
 
 
+@router.get("/{decision_id}/export")
+def export_decision(decision_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The proposal (សំណើ) as an Excel file: the decision's details and one row per soldier, old → new rank,
+    position, ស្ថាប័នកងឯកភាព and unit, with the anomalies (ព័ត៌មានខុសប្រក្រតី) of each soldier."""
+    d = _get(db, decision_id)
+    _need(user, d.kind, "export")
+    visible = _in_scope_condition(db, user)
+    if visible is not None and not db.scalar(select(Decision.id).where(Decision.id == d.id, visible)):
+        raise HTTPException(403, "សេចក្ដីសម្រេចនេះនៅក្រៅសិទ្ធិរបស់អ្នក")
+    data = decision_out(db, d, user=user)
+    buf = BytesIO()
+    decision_workbook(data, get_setting(db, "org_name_kh")).save(buf)
+    buf.seek(0)
+    return _xlsx_response(buf, f"decision-{d.kind}-{d.decision_no or d.id}")
+
+
+def _xlsx_response(buf: BytesIO, stem: str) -> StreamingResponse:
+    """HTTP headers are latin-1: a decision number in Khmer digits (០១២/២៦) goes in filename* (UTF-8), with an
+    ASCII-only fallback name."""
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-") or "decision"
+    full = re.sub(r'[\\/:*?"<>|\s]+', "-", stem).strip("-") or ascii_name
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f"attachment; filename={ascii_name}.xlsx; "
+                                                            f"filename*=UTF-8''{quote(full)}.xlsx"})
+
+
+def _ddmmyyyy(iso: str | None) -> str:
+    return f"{iso[8:10]}/{iso[5:7]}/{iso[:4]}" if iso else ""
+
+
+def _change(old: str | None, new: str | None, changed: bool) -> tuple[str, str]:
+    """(old, new) cells: an unchanged value is shown in both, so no cell of a soldier is left empty."""
+    return old or "-", (new or "-") if changed else (old or "-")
+
+
+def decision_workbook(data: dict, org_name: str) -> Workbook:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "សំណើ"[:31]
+    kind = data["kind"]
+    cols = ["ល.រ", "អត្តលេខ", "គោត្តនាមនិងនាម", "ឈ្មោះឡាតាំង", "ភេទ", "ថ្ងៃខែឆ្នាំកំណើត"]
+    if kind != "appoint":
+        cols += ["ឋានន្តរស័ក្តិចាស់", "ឋានន្តរស័ក្តិថ្មី"]
+    else:
+        cols += ["ឋានន្តរស័ក្តិ"]
+    if kind != "promote":
+        cols += ["មុខតំណែងចាស់", "មុខតំណែងថ្មី", "ស្ថាប័នកងឯកភាពចាស់", "អង្គភាពចាស់", "ស្ថាប័នកងឯកភាពថ្មី", "អង្គភាពថ្មី"]
+    else:
+        cols += ["មុខតំណែង", "អង្គភាព"]
+    cols += ["ព័ត៌មានខុសប្រក្រតី", "កំណត់សម្គាល់"]
+    ncol = len(cols)
+    bold = Font(bold=True)
+    head = [
+        (org_name, Font(bold=True, size=12)),
+        (f"សំណើ{data['kind_name']}", Font(bold=True, size=14)),
+    ]
+    for text, font in head:
+        ws.append([text])
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=ncol)
+        c = ws.cell(ws.max_row, 1)
+        c.font, c.alignment = font, Alignment(horizontal="center")
+    info = [
+        ("លេខសេចក្ដីសម្រេច", data["decision_no"] or "-"), ("ថ្ងៃខែឆ្នាំ", _ddmmyyyy(data["decision_date"])),
+        ("ចូលជាធរមាន", _ddmmyyyy(data["effective_date"])), ("ស្ថានភាព", data["status_name"]),
+        ("ឯកសារចូល (សំណើ)", data["incoming_no"] or "-"), ("ឯកសារចេញ", data["outgoing_no"] or "-"),
+        ("ចេញដោយ", data["issued_by"] or ""), ("អ្នកដាក់សំណើ", data["created_by_name"] or ""),
+        ("កំណត់សម្គាល់", data["notes"] or ""),
+    ]
+    for label, value in info:
+        ws.append([label, value])
+        ws.cell(ws.max_row, 1).font = bold
+        ws.merge_cells(start_row=ws.max_row, start_column=2, end_row=ws.max_row, end_column=min(ncol, 6))
+    if data["general_anomalies"]:
+        ws.append(["ព័ត៌មានខុសប្រក្រតី", "\n".join(data["general_anomalies"])])
+        ws.cell(ws.max_row, 1).font = bold
+    ws.append([])
+    header_row = ws.max_row + 1
+    ws.append(cols)
+    thin = Side(style="thin", color="888888")
+    fill = PatternFill("solid", fgColor="E8EEF2")
+    warn = PatternFill("solid", fgColor="FFF4E0")
+    for c in ws[header_row]:
+        c.font, c.fill = bold, fill
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for n, i in enumerate(data["items"], start=1):
+        row = [n, i["military_id"], i["name_kh"], i["name_latin"] or "", "ស្រី" if i["gender"] == "F" else "ប្រុស",
+               _ddmmyyyy(i["date_of_birth"])]
+        if kind != "appoint":
+            row += _change(i["old_rank"], i["new_rank"], bool(i["new_rank_id"]))
+        else:
+            row += [i["old_rank"] or "-"]
+        if kind != "promote":
+            moved = bool(i["new_unit_id"])
+            row += _change(i["old_position"], i["new_position"], bool(i["new_position_id"]))
+            row += [i["old_institution"] or "-", i["old_unit"] or "-"]
+            row += list(_change(i["old_institution"], i["new_institution"], moved))[1:] + \
+                list(_change(i["old_unit"], i["new_unit"], moved))[1:]
+        else:
+            row += [i["old_position"] or "-", i["old_unit"] or "-"]
+        row += ["\n".join(i["anomalies"]), i["note"] or ""]
+        ws.append(row)
+        for c in ws[ws.max_row]:
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+            if i["anomalies"]:
+                c.fill = warn
+    for r in ws.iter_rows(min_row=header_row, max_row=ws.max_row):
+        for c in r:
+            c.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    widths = {"ល.រ": 6, "អត្តលេខ": 12, "ភេទ": 7, "ថ្ងៃខែឆ្នាំកំណើត": 14, "ព័ត៌មានខុសប្រក្រតី": 48, "កំណត់សម្គាល់": 22}
+    for idx, name in enumerate(cols, start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = widths.get(name, 24)
+    ws.column_dimensions["A"].width = max(ws.column_dimensions["A"].width, 18)  # also holds the detail labels
+    ws.append([])
+    ws.append([f"សរុប៖ {len(data['items'])} នាក់"])
+    ws.cell(ws.max_row, 1).font = bold
+    ws.freeze_panes = ws.cell(header_row + 1, 4)
+    return wb
+
+
 @router.post("/check")
 def check_decision(payload: DecisionCheckIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Anomalies of a decision being typed (nothing is saved), so the form can show them before saving."""
+    """Anomalies of a decision being typed (nothing is saved), so the form can show them before saving:
+    `general` for the decision, `items` per soldier line (shown next to the new unit), `warnings` all of them."""
     _need(user, payload.kind, "view")
-    out = decision_level_anomalies(payload.decision_date, payload.effective_date)
+    general, items = _check_lines(db, payload)
+    out = list(general) + [f"{i['label']}: {m}" for i in items for m in i["warnings"]]
+    return {"warnings": out, "general": general,
+            "items": [{"soldier_id": i["soldier"].id, "warnings": i["warnings"], "errors": i["errors"]} for i in items]}
+
+
+def _check_lines(db: Session, payload: DecisionCheckIn) -> tuple[list[str], list[dict]]:
+    """The decision-level anomalies, and per soldier line: its anomalies (warnings, never blocking) and what saving
+    would refuse (errors: a missing choice, a lower rank, a full staffing slot or rank quota, a soldier twice)."""
+    general = decision_level_anomalies(db, payload.decision_date, payload.effective_date, decision_no=payload.decision_no,
+                                       incoming_document_id=payload.incoming_document_id, decision_id=payload.id)
+    lines, changes, counts = [], [], {}
+    for it in payload.items:
+        counts[it.soldier_id] = counts.get(it.soldier_id, 0) + 1
     for it in payload.items:
         s = db.get(Soldier, it.soldier_id)
         if not s or s.deleted_at:
             continue
+        label = soldier_label(s)
         new_rank_id = it.new_rank_id if payload.kind in ("promote", "transfer") else None
-        out += anomalies(db, payload.kind, payload.decision_date, payload.effective_date, s, new_rank_id,
-                         it.new_position_id, it.new_unit_id, payload.id)
-    return {"warnings": out}
+        errors = item_errors(db, payload.kind, s, new_rank_id, it.new_position_id, it.new_unit_id)
+        if counts[s.id] > 1:
+            errors.append("យោធិនម្នាក់នេះត្រូវបានបញ្ចូលច្រើនដង")
+        lines.append({"soldier": s, "label": label, "item": it, "new_rank_id": new_rank_id, "errors": errors,
+                      "warnings": item_anomalies(db, payload.kind, payload.decision_date, payload.effective_date, s,
+                                                 new_rank_id, it.new_position_id, it.new_unit_id, payload.id)})
+        changes.append((s, new_rank_id, it.new_position_id, it.new_unit_id, label))
+    for line, problems in zip(lines, staffing_issues(db, payload.kind, changes), strict=True):
+        line["errors"] += [p.removeprefix(f"{line['label']}: ") for p in problems]
+    return general, lines
+
+
+@router.post("/export-preview")
+def export_preview(payload: DecisionCheckIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The proposal (សំណើ) exactly as it stands in the form, saved or not, as an Excel file: the same layout as
+    /{id}/export, with what saving would refuse added to each soldier's anomalies."""
+    _need(user, payload.kind, "export")
+    scope = scope_unit_ids(db, user)
+    general, lines = _check_lines(db, payload)
+    for line in lines:
+        if scope is not None and line["soldier"].current_unit_id not in scope:
+            raise HTTPException(403, f"{line['soldier'].name_kh}: នៅក្រៅសិទ្ធិរបស់អ្នក")
+    ids = [i for line in lines for i in (line["soldier"].current_rank_id, line["new_rank_id"])]
+    ranks = names_by_id(db, Rank, ids)
+    poss = names_by_id(db, Position, [i for line in lines for i in (line["soldier"].current_position_id,
+                                                                      line["item"].new_position_id)])
+    units = names_by_id(db, Unit, [i for line in lines for i in (line["soldier"].current_unit_id, line["item"].new_unit_id)])
+    saved = db.get(Decision, payload.id) if payload.id else None
+    items = []
+    for line in lines:
+        s, it = line["soldier"], line["item"]
+        items.append({
+            "military_id": s.military_id, "name_kh": s.name_kh, "name_latin": s.name_latin, "gender": s.gender,
+            "date_of_birth": s.date_of_birth.isoformat() if s.date_of_birth else None,
+            "old_rank": ranks.get(s.current_rank_id), "new_rank": ranks.get(line["new_rank_id"]), "new_rank_id": line["new_rank_id"],
+            "old_position": poss.get(s.current_position_id), "new_position": poss.get(it.new_position_id),
+            "new_position_id": it.new_position_id,
+            "old_unit": units.get(s.current_unit_id), "new_unit": units.get(it.new_unit_id), "new_unit_id": it.new_unit_id,
+            "old_institution": institution_name(db, s.current_unit_id), "new_institution": institution_name(db, it.new_unit_id),
+            "anomalies": [f"មិនអាចរក្សាទុក: {e}" for e in line["errors"]] + line["warnings"], "note": it.note,
+        })
+    data = {
+        "kind": payload.kind, "kind_name": DECISION_KINDS[payload.kind], "decision_no": payload.decision_no,
+        "decision_date": payload.decision_date.isoformat() if payload.decision_date else None,
+        "effective_date": payload.effective_date.isoformat() if payload.effective_date else None,
+        "status_name": DECISION_STATUSES.get(saved.status, saved.status) + " (មិនទាន់រក្សាទុកការកែប្រែ)" if saved
+        else "សេចក្ដីព្រាង (មិនទាន់រក្សាទុក)",
+        "incoming_no": db.scalar(select(DocumentIncoming.incoming_no).where(
+            DocumentIncoming.id == payload.incoming_document_id)) if payload.incoming_document_id else None,
+        "outgoing_no": None, "issued_by": payload.issued_by, "notes": payload.notes,
+        "created_by_name": db.scalar(select(User.full_name).where(User.id == saved.created_by))
+        if saved and saved.created_by else user.full_name,
+        "general_anomalies": general, "items": items,
+    }
+    buf = BytesIO()
+    decision_workbook(data, get_setting(db, "org_name_kh")).save(buf)
+    buf.seek(0)
+    return _xlsx_response(buf, f"decision-{payload.kind}-{(payload.decision_no or '').strip() or 'draft'}")
 
 
 @router.post("", status_code=201)
