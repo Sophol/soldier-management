@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     MAX_UPLOAD_MB: int = 20
     MAX_FAILED_LOGINS: int = 5
     LOCKOUT_MINUTES: int = 15
+    # how often approved decisions whose effective date has come are applied to the soldiers (0 = never: tests)
+    DECISION_APPLY_MINUTES: int = 30
 
     @property
     def storage_path(self) -> Path:

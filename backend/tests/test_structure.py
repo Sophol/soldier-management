@@ -108,3 +108,65 @@ def test_specialty_category_and_course_level(admin):
     assert all(x["category"] == "civil" for x in admin.get(f"{API}/specialties", params={"category": "civil"}).json()["items"])
     c = admin.post(f"{API}/training/courses", json={"name": "វគ្គបំប៉ន TEST", "course_type": "short", "level": "refresher"}).json()
     assert c["level"] == "refresher"
+
+
+def test_swap_and_replacement_within_one_decision_fit_a_full_table(admin):
+    lk = _lookups(admin)
+    _, unit, other = _units(admin)
+    pa, pb = lk["positions"][0]["id"], lk["positions"][1]["id"]
+    a = _soldier(admin, lk, unit["id"], mid="TEST-SW1", current_position_id=pa)
+    b = _soldier(admin, lk, other["id"], mid="TEST-SW2", national_id="TEST-NID-SW2", current_position_id=pb)
+    c = _soldier(admin, lk, other["id"], mid="TEST-SW3", national_id="TEST-NID-SW3")
+    for u, p in ((unit, pa), (other, pb)):
+        assert admin.post(f"{API}/unit-positions", json={"unit_id": u["id"], "position_id": p, "quota": 1}).status_code == 201
+    # a and b swap their (full) slots
+    swap = _transfer(admin, [{"soldier_id": a["id"], "new_unit_id": other["id"], "new_position_id": pb},
+                             {"soldier_id": b["id"], "new_unit_id": unit["id"], "new_position_id": pa}], no="SW-1")
+    assert swap.status_code == 201, swap.text
+    admin.delete(f"{API}/decisions/{swap.json()['id']}")
+    # c replaces a, who moves on to b's slot; b is not in the decision, so b's slot is still full
+    chain = _transfer(admin, [{"soldier_id": c["id"], "new_unit_id": unit["id"], "new_position_id": pa},
+                              {"soldier_id": a["id"], "new_unit_id": other["id"], "new_position_id": pb}], no="SW-2")
+    assert chain.status_code == 400 and chain.json()["detail"].count("ពេញក្របខណ្ឌ") == 1
+    # the checker shows the same: only a's line is refused
+    check = admin.post(f"{API}/decisions/check", json={"kind": "transfer", "decision_date": "2025-01-01",
+                                                       "effective_date": "2025-01-01", "items": [
+        {"soldier_id": c["id"], "new_unit_id": unit["id"], "new_position_id": pa},
+        {"soldier_id": a["id"], "new_unit_id": other["id"], "new_position_id": pb}]}).json()
+    assert [bool(i["errors"]) for i in check["items"]] == [False, True]
+
+
+def test_rank_quota_freed_by_a_soldier_promoted_out_of_it(admin):
+    lk = _lookups(admin)
+    _, unit, _ = _units(admin)
+    ranks = lk["ranks"]  # highest first
+    low, mid, high = ranks[-2], ranks[-3], ranks[-4]
+    a = _soldier(admin, lk, unit["id"], mid="TEST-RQ1", current_rank_id=mid["id"])
+    b = _soldier(admin, lk, unit["id"], mid="TEST-RQ2", national_id="TEST-NID-RQ2", current_rank_id=low["id"])
+    filled = admin.get(f"{API}/ranks/{mid['id']}").json()["filled"]
+    admin.put(f"{API}/ranks/{mid['id']}", json={**{k: mid[k] for k in ("rank_class_id", "name_kh", "sort_order")},
+                                               "quota": filled})
+    body = {"kind": "promote", "decision_no": "RQ-1", "decision_date": "2025-01-01", "effective_date": "2025-01-01"}
+    alone = admin.post(f"{API}/decisions", json={**body, "items": [{"soldier_id": b["id"], "new_rank_id": mid["id"]}]})
+    assert alone.status_code == 400 and "ពេញចំនួនកំណត់" in alone.json()["detail"]
+    # a leaves the rank in the same decision, so b fits
+    both = admin.post(f"{API}/decisions", json={**body, "items": [{"soldier_id": a["id"], "new_rank_id": high["id"]},
+                                                                  {"soldier_id": b["id"], "new_rank_id": mid["id"]}]})
+    assert both.status_code == 201, both.text
+
+
+def test_promotion_above_the_positions_highest_rank_is_refused(admin):
+    lk = _lookups(admin)
+    _, unit, _ = _units(admin)
+    ranks = lk["ranks"]  # highest first
+    pos = lk["positions"][0]["id"]
+    s = _soldier(admin, lk, unit["id"], mid="TEST-MX1", current_position_id=pos)  # rank ranks[-3]
+    assert admin.post(f"{API}/unit-positions", json={"unit_id": unit["id"], "position_id": pos, "quota": 5,
+                                                     "max_rank_id": ranks[-4]["id"]}).status_code == 201
+    body = {"kind": "promote", "decision_date": "2025-01-01", "effective_date": "2025-01-01"}
+    over = admin.post(f"{API}/decisions", json={**body, "decision_no": "MX-1",
+                                                "items": [{"soldier_id": s["id"], "new_rank_id": ranks[-5]["id"]}]})
+    assert over.status_code == 400 and "អតិបរមា" in over.json()["detail"]
+    ok = admin.post(f"{API}/decisions", json={**body, "decision_no": "MX-2",
+                                              "items": [{"soldier_id": s["id"], "new_rank_id": ranks[-4]["id"]}]})
+    assert ok.status_code == 201, ok.text

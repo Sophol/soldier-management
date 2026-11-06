@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.api.crud import audit_filters
@@ -56,7 +56,7 @@ from app.models import (
 from app.models.decision import DECISION_KINDS
 from app.schemas import ApproveIn, DecisionCheckIn, DecisionIn, WorkflowStepIn
 from app.services.common import audit, names_by_id, paginate, scope_unit_ids, to_dict, unit_subtree_ids
-from app.services.soldier import add_history, add_movement, diff_ym, is_inactive, unit_chain, years_to_next_rank
+from app.services.soldier import KH_DIGITS, add_history, add_movement, diff_ym, is_inactive, unit_chain, years_to_next_rank
 from app.services.staffing import staffing_problems
 
 router = APIRouter(prefix="/decisions", tags=["decisions"])
@@ -109,7 +109,8 @@ def decision_out(db: Session, d: Decision, with_items: bool = True, user: User |
     per_item = [item_anomalies(db, d.kind, d.decision_date, d.effective_date, i.soldier, i.new_rank_id,
                                i.new_position_id, i.new_unit_id, d.id) if live else [] for i in d.items]
     out = {**to_dict(d), "kind_name": DECISION_KINDS.get(d.kind), "item_count": len(d.items),
-           "status_name": DECISION_STATUSES.get(d.status, d.status),
+           "status_name": DECISION_STATUSES.get(d.status, d.status) + (" (រង់ចាំថ្ងៃចូលជាធរមាន)" if is_pending(d) else ""),
+           "pending": is_pending(d), "apply_error": apply_error(d),
            "overdue": d.status in IN_PROGRESS and d.status_changed_at is not None and d.status_changed_at < overdue_before,
            "actions": allowed_actions(user, d) if user else [],
            "created_by_name": db.scalar(select(User.full_name).where(User.id == d.created_by)) if d.created_by else None,
@@ -237,7 +238,8 @@ def item_anomalies(db: Session, kind: str, decision_date: date | None, effective
         out.append("ថ្ងៃចូលជាធរមាន មុនថ្ងៃចូលបម្រើទ័ព")
     others = db.scalars(select(Decision.decision_no).join(DecisionItem).where(
         DecisionItem.soldier_id == s.id, Decision.deleted_at.is_(None), Decision.id != (decision_id or 0),
-        Decision.status.in_(("draft", *IN_PROGRESS)))).all()
+        or_(Decision.status.in_(("draft", *IN_PROGRESS)),
+            and_(Decision.status == "approved", Decision.published_at.is_(None))))).all()  # approved, not yet in effect
     if others:
         out.append(f"មាននៅក្នុងសេចក្ដីសម្រេចផ្សេងទៀតដែលកំពុងដំណើរការ ({len(others)})")
     return out
@@ -289,6 +291,42 @@ def _in_scope_condition(db: Session, user: User):
         or_(Soldier.current_unit_id.in_(scope), DecisionItem.old_unit_id.in_(scope))))
 
 
+def _level_condition(user: User, kind: str):
+    """SQL condition (None = no limit): answer.txt "ថ្នាក់ណាមិនទាន់អនុម័ត ថ្នាក់បន្ទាប់មិនអាចមើលឬធ្វើបានទេ" — a user
+    who approves at a workflow level (and does not enter decisions of this kind) sees a decision only once it has
+    reached that level: drafts and decisions still with a lower level stay hidden, and so does one rejected below."""
+    module = DECISION_MODULE[kind]
+    if user.can(module, "create") or user.can(module, "update"):  # Super Admin, the assistants who enter them
+        return None
+    stages = list(WORKFLOW_STAGES)
+    mine = [n for n, st in enumerate(stages) if can_act_at(user, st)]
+    if not mine:
+        return None
+    reached = stages[min(mine):]
+    rejected_up = select(DecisionStep.decision_id).where(DecisionStep.action == "reject",
+                                                         DecisionStep.from_status.in_(reached))
+    return or_(Decision.status.in_((*reached, "approved", "cancelled")),
+               and_(Decision.status == "rejected", Decision.id.in_(rejected_up)))
+
+
+def visible_condition(db: Session, user: User, kind: str | None = None):
+    """What decisions the user may see: the soldiers of their units (_in_scope_condition) and, for the approval
+    levels, only those that have reached them (_level_condition). kind=None: every kind. None = everything."""
+    conds = []
+    if (scope := _in_scope_condition(db, user)) is not None:
+        conds.append(scope)
+    per_kind = [(k, _level_condition(user, k)) for k in ([kind] if kind else DECISION_KINDS)]
+    if any(c is not None for _, c in per_kind):
+        conds.append(or_(*(and_(Decision.kind == k, c if c is not None else true()) for k, c in per_kind)))
+    return and_(*conds) if conds else None
+
+
+def _check_visible(db: Session, user: User, d: Decision) -> None:
+    visible = visible_condition(db, user, d.kind)
+    if visible is not None and not db.scalar(select(Decision.id).where(Decision.id == d.id, visible)):
+        raise HTTPException(403, "សេចក្ដីសម្រេចនេះនៅក្រៅសិទ្ធិរបស់អ្នក")
+
+
 def _check_scope(db: Session, user: User, d: Decision, *, allow_old_unit: bool = False) -> None:
     """Acting on a decision needs every soldier in it to be within the user's units. When cancelling, the unit
     before the decision also counts (an approved transfer may have moved the soldier out of the user's units)."""
@@ -328,7 +366,15 @@ def _check_change(db: Session, s: Soldier, kind: str, new_rank_id, new_position_
 def staffing_issues(db: Session, kind: str, changes: list[tuple]) -> list[list[str]]:
     """Staffing table / rank quota problems (ក្របខណ្ឌ), one list per change, each message starting with its label.
     changes: [(soldier, new_rank_id, new_position_id, new_unit_id, label)]; soldiers of the same decision going
-    into the same slot or rank are counted together."""
+    into the same slot or rank are counted together, and those leaving a slot or rank free it for the others
+    (a swap, or a soldier replacing one who moves on, within one decision)."""
+    leaving_slot, leaving_rank = {}, {}
+    for s, new_rank_id, new_position_id, new_unit_id, _ in changes:
+        new_slot = (new_unit_id or s.current_unit_id, new_position_id or s.current_position_id)
+        if (new_position_id or new_unit_id) and new_slot != (s.current_unit_id, s.current_position_id):
+            leaving_slot.setdefault((s.current_unit_id, s.current_position_id), set()).add(s.id)
+        if new_rank_id and new_rank_id != s.current_rank_id and s.current_rank_id:
+            leaving_rank.setdefault(s.current_rank_id, set()).add(s.id)
     out, slots, ranks = [], {}, {}
     for s, new_rank_id, new_position_id, new_unit_id, label in changes:
         unit_id, position_id = new_unit_id or s.current_unit_id, new_position_id or s.current_position_id
@@ -336,7 +382,9 @@ def staffing_issues(db: Session, kind: str, changes: list[tuple]) -> list[list[s
         rank_id = (new_rank_id if kind == "promote" or new_rank_id else None) or s.current_rank_id
         out.append(staffing_problems(db, s, unit_id=unit_id, position_id=position_id, rank_id=rank_id,
                                      slot_changes=slot_changes, rank_changes=bool(new_rank_id), label=label,
-                                     planned_slot=slots.get((unit_id, position_id), 0), planned_rank=ranks.get(rank_id, 0)))
+                                     planned_slot=slots.get((unit_id, position_id), 0), planned_rank=ranks.get(rank_id, 0),
+                                     leaving_slot=frozenset(leaving_slot.get((unit_id, position_id), ())),
+                                     leaving_rank=frozenset(leaving_rank.get(rank_id, ()))))
         if slot_changes:
             slots[(unit_id, position_id)] = slots.get((unit_id, position_id), 0) + 1
         if new_rank_id:
@@ -400,13 +448,15 @@ def list_decisions(request: Request, kind: str, page: int = Query(1, ge=1), size
     (units include their sub-units). created_by = the submitter (អ្នកដាក់សំណើ)."""
     _need(user, kind, "view")
     stmt = select(Decision).where(Decision.kind == kind, Decision.deleted_at.is_(None))
-    visible = _in_scope_condition(db, user)
+    visible = visible_condition(db, user, kind)
     if visible is not None:
         stmt = stmt.where(visible)
     if q:
+        q = q.strip()
+        mid = q.translate(KH_DIGITS)  # a military ID typed with Khmer digits
         stmt = stmt.where(or_(Decision.decision_no.ilike(f"%{q}%"), Decision.notes.ilike(f"%{q}%"),
                               Decision.id.in_(select(DecisionItem.decision_id).join(Soldier).where(
-                                  or_(Soldier.name_kh.ilike(f"%{q}%"), Soldier.military_id.ilike(f"%{q}%"))))))
+                                  or_(Soldier.name_kh.ilike(f"%{q}%"), Soldier.military_id.ilike(f"%{mid}%"))))))
     if status:
         stmt = stmt.where(Decision.status == status)
     if waiting:
@@ -440,6 +490,27 @@ def list_decisions(request: Request, kind: str, page: int = Query(1, ge=1), size
             "total": total, "page": page, "size": size}
 
 
+@router.get("/inbox")
+def inbox(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """For the bell in the header: decisions waiting at a step this user acts on, per kind, and how many of them
+    have waited too long. Polled by the client, so it stays a few counts."""
+    mine = [st for st in WORKFLOW_STAGES if can_act_at(user, st)]
+    kinds = [k for k in DECISION_KINDS if user.can(DECISION_MODULE[k], "view")]
+    out = {"waiting": dict.fromkeys(kinds, 0), "overdue": 0, "total": 0}
+    if not mine or not kinds:
+        return out
+    stmt = select(Decision.kind, Decision.status_changed_at).where(
+        Decision.deleted_at.is_(None), Decision.status.in_(mine), Decision.kind.in_(kinds))
+    if (visible := visible_condition(db, user)) is not None:
+        stmt = stmt.where(visible)
+    cutoff = overdue_cutoff(db)
+    for k, changed in db.execute(stmt):
+        out["waiting"][k] += 1
+        out["total"] += 1
+        out["overdue"] += bool(changed and changed < cutoff)
+    return out
+
+
 def _get(db: Session, decision_id: int) -> Decision:
     d = db.get(Decision, decision_id)
     if not d or d.deleted_at:
@@ -451,9 +522,7 @@ def _get(db: Session, decision_id: int) -> Decision:
 def get_decision(decision_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     d = _get(db, decision_id)
     _need(user, d.kind, "view")
-    visible = _in_scope_condition(db, user)
-    if visible is not None and not db.scalar(select(Decision.id).where(Decision.id == d.id, visible)):
-        raise HTTPException(403, "សេចក្ដីសម្រេចនេះនៅក្រៅសិទ្ធិរបស់អ្នក")
+    _check_visible(db, user, d)
     return decision_out(db, d, user=user)
 
 
@@ -463,9 +532,7 @@ def export_decision(decision_id: int, db: Session = Depends(get_db), user: User 
     position, ស្ថាប័នកងឯកភាព and unit, with the anomalies (ព័ត៌មានខុសប្រក្រតី) of each soldier."""
     d = _get(db, decision_id)
     _need(user, d.kind, "export")
-    visible = _in_scope_condition(db, user)
-    if visible is not None and not db.scalar(select(Decision.id).where(Decision.id == d.id, visible)):
-        raise HTTPException(403, "សេចក្ដីសម្រេចនេះនៅក្រៅសិទ្ធិរបស់អ្នក")
+    _check_visible(db, user, d)
     data = decision_out(db, d, user=user)
     buf = BytesIO()
     decision_workbook(data, get_setting(db, "org_name_kh")).save(buf)
@@ -777,9 +844,11 @@ def approve_decision(decision_id: int, request: Request, payload: ApproveIn | No
     _recheck(db, d)
     to_status = FLOW[FLOW.index(d.status) + 1]
     if to_status == "approved":
-        _apply(db, d, user, payload)
+        _register(db, d, user, payload)
         d.approved_by, d.approved_at = user.id, datetime.now()
     _move(db, d, user, "approve", to_status, payload.comment)
+    if to_status == "approved" and d.effective_date <= date.today():
+        apply_to_soldiers(db, d, user.id)  # a future effective date waits for apply_due
     return _done(db, user, d, "approve", request)
 
 
@@ -807,8 +876,9 @@ def reject_decision(decision_id: int, payload: WorkflowStepIn, request: Request,
     return _done(db, user, d, "reject", request)
 
 
-def _apply(db: Session, d: Decision, user: User, payload: ApproveIn) -> None:
-    """Final approval: register the outgoing letter (or use the one given) and update the soldiers' records."""
+def _register(db: Session, d: Decision, user: User, payload: ApproveIn) -> None:
+    """Final approval: register the outgoing letter (or use the one given) and the decision number. The soldiers'
+    records change on the effective date (apply_to_soldiers)."""
     if payload.decision_date:
         d.decision_date = payload.decision_date
     if payload.outgoing_document_id:
@@ -826,6 +896,15 @@ def _apply(db: Session, d: Decision, user: User, payload: ApproveIn) -> None:
         db.flush()
         d.outgoing_document_id = doc.id
     d.decision_no = payload.decision_no or d.decision_no or db.get(DocumentOutgoing, d.outgoing_document_id).outgoing_no
+
+
+def is_pending(d: Decision) -> bool:
+    """Approved, but its effective date has not come yet: the soldiers' records have not changed."""
+    return d.status == "approved" and d.published_at is None
+
+
+def apply_to_soldiers(db: Session, d: Decision, user_id: int | None) -> None:
+    """Write the decision into the soldiers' records, history and strength movements (on the effective date)."""
     eff = d.effective_date
     for it in d.items:
         s = db.get(Soldier, it.soldier_id)
@@ -843,19 +922,69 @@ def _apply(db: Session, d: Decision, user: User, payload: ApproveIn) -> None:
             add_movement(db, s.id, it.new_unit_id, "in", "transfer_in", eff, "decisions", d.id)
             s.from_unit_text = s.unit.name_kh if s.unit else s.from_unit_text
             s.current_unit_id, s.unit_transfer_date = it.new_unit_id, eff
-        s.updated_by = user.id
+        s.updated_by = user_id
         add_history(db, s, d.kind, eff, old_rank=it.old_rank_id, new_rank=it.new_rank_id or None,
                     old_position=it.old_position_id, new_position=it.new_position_id,
                     old_unit=it.old_unit_id, new_unit=it.new_unit_id, decision_id=d.id,
                     note=f"{DECISION_KINDS[d.kind]} លេខ {d.decision_no}")
-    d.published_by, d.published_at = user.id, datetime.now()
+    d.published_by, d.published_at = user_id, datetime.now()
+
+
+APPLY_FAILED = "apply_failed"
+
+
+def apply_error(d: Decision) -> str | None:
+    """Why an approved decision could not be applied on its effective date (the last log line says so)."""
+    last = d.steps[-1] if d.steps else None
+    return last.comment if is_pending(d) and last and last.action == APPLY_FAILED else None
+
+
+def apply_due(db: Session, today: date | None = None) -> int:
+    """Apply the approved decisions whose effective date has come (run at start-up and then periodically). A decision
+    that no longer fits (the soldier retired, the slot filled up meanwhile...) stays pending with the reason logged,
+    so leadership can cancel it. Rows are locked (SKIP LOCKED) so several workers never apply one twice.
+    Returns how many were applied; the caller commits."""
+    today = today or date.today()
+    due = db.scalars(select(Decision).where(
+        Decision.status == "approved", Decision.published_at.is_(None), Decision.deleted_at.is_(None),
+        Decision.effective_date <= today).order_by(Decision.effective_date, Decision.id)
+        .with_for_update(skip_locked=True)).all()
+    applied = 0
+    for d in due:
+        try:
+            _recheck(db, d)
+        except HTTPException as e:
+            if apply_error(d) != e.detail:  # log each new reason once, not at every run
+                db.add(DecisionStep(decision_id=d.id, action=APPLY_FAILED, from_status="approved",
+                                    to_status="approved", comment=str(e.detail)))
+                db.flush()
+                db.refresh(d, ["steps"])
+            continue
+        apply_to_soldiers(db, d, d.approved_by)
+        db.add(DecisionStep(decision_id=d.id, action="apply", from_status="approved", to_status="approved",
+                            comment=f"ចូលជាធរមានថ្ងៃ {d.effective_date:%d/%m/%Y}"))
+        applied += 1
+    return applied
 
 
 @router.post("/{decision_id}/cancel")
 def cancel_decision(decision_id: int, request: Request, payload: WorkflowStepIn | None = None,
                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Revert an approved decision (only if nothing newer has changed the soldiers since)."""
+    """Revert an approved decision (only if nothing newer has changed the soldiers since). One still waiting for its
+    effective date has changed nothing yet. Its outgoing letter is marked cancelled."""
     d = _act(db, user, decision_id, "cancel")
+    comment = payload.comment if payload else None
+    if not is_pending(d):
+        _revert(db, d)
+    if d.outgoing_document_id and (doc := db.get(DocumentOutgoing, d.outgoing_document_id)):
+        doc.status = "cancelled"
+        note = f"សេចក្ដីសម្រេចលេខ {d.decision_no} ត្រូវបានលុបចោលថ្ងៃ {date.today():%d/%m/%Y}" + (f"៖ {comment}" if comment else "")
+        doc.remarks = f"{doc.remarks}\n{note}" if doc.remarks else note
+    _move(db, d, user, "cancel", "cancelled", comment)
+    return _done(db, user, d, "cancel", request)
+
+
+def _revert(db: Session, d: Decision) -> None:
     for it in d.items:
         s = db.get(Soldier, it.soldier_id)
         own = db.scalar(select(func.min(SoldierHistory.id)).where(
@@ -879,5 +1008,3 @@ def cancel_decision(decision_id: int, request: Request, payload: WorkflowStepIn 
     db.execute(delete(SoldierHistory).where(SoldierHistory.decision_id == d.id))
     db.execute(delete(StrengthMovement).where(StrengthMovement.source_table == "decisions",
                                               StrengthMovement.source_id == d.id))
-    _move(db, d, user, "cancel", "cancelled", payload.comment if payload else None)
-    return _done(db, user, d, "cancel", request)

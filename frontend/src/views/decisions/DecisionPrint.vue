@@ -43,8 +43,9 @@ onMounted(async () => {
             <th v-if="d.kind === 'promote'">ឋានន្តរស័ក្តិចាស់</th>
             <th v-if="d.kind === 'promote'">ឋានន្តរស័ក្តិថ្មី</th>
             <th v-if="d.kind !== 'promote'">ឋានន្តរស័ក្តិ</th>
-            <th v-if="d.kind !== 'promote'">មុខតំណែង/អង្គភាពចាស់</th>
-            <th v-if="d.kind !== 'promote'">មុខតំណែង/អង្គភាពថ្មី</th>
+            <th v-if="d.kind !== 'promote'">មុខតំណែង/អង្គភាព/ស្ថាប័នកងឯកភាពចាស់</th>
+            <th v-if="d.kind !== 'promote'">មុខតំណែង/អង្គភាព/ស្ថាប័នកងឯកភាពថ្មី</th>
+            <th v-if="d.kind === 'promote'">មុខតំណែង/អង្គភាព</th>
           </tr>
         </thead>
         <tbody>
@@ -55,10 +56,14 @@ onMounted(async () => {
             <td class="c">{{ i.gender === 'F' ? 'ស្រី' : 'ប្រុស' }}</td>
             <td v-if="d.kind === 'promote'">{{ i.old_rank }}</td>
             <td v-if="d.kind === 'promote'"><b>{{ i.new_rank }}</b></td>
+            <td v-if="d.kind === 'promote'">{{ [i.old_position, i.old_unit].filter(Boolean).join(' · ') }}
+              <div v-if="i.old_institution" class="inst">{{ i.old_institution }}</div></td>
             <!-- a transfer may also promote: old → new rank -->
             <td v-if="d.kind !== 'promote'">{{ i.old_rank || '-' }}<template v-if="i.new_rank_id"> → <b>{{ i.new_rank }}</b></template></td>
-            <td v-if="d.kind !== 'promote'">{{ [i.old_position, i.old_unit].filter(Boolean).join(' · ') }}</td>
-            <td v-if="d.kind !== 'promote'"><b>{{ [i.new_position || i.old_position, i.new_unit || i.old_unit].filter(Boolean).join(' · ') }}</b></td>
+            <td v-if="d.kind !== 'promote'">{{ [i.old_position, i.old_unit].filter(Boolean).join(' · ') }}
+              <div v-if="i.old_institution" class="inst">{{ i.old_institution }}</div></td>
+            <td v-if="d.kind !== 'promote'"><b>{{ [i.new_position || i.old_position, i.new_unit || i.old_unit].filter(Boolean).join(' · ') }}</b>
+              <div v-if="i.new_institution || i.old_institution" class="inst">{{ (i.new_unit_id && i.new_institution) || i.old_institution }}</div></td>
           </tr>
         </tbody>
       </table>
@@ -86,6 +91,7 @@ table { border-collapse: collapse; width: 100%; margin-top: 10px; }
 .grid th, .grid td { border: 1px solid #444; padding: 3px 6px; }
 .grid th { background: #f0f0f0; }
 .c { text-align: center; }
+.inst { font-size: 11px; color: #333; }
 .sign { margin-top: 30px; margin-left: auto; width: 80mm; text-align: center; line-height: 2.2; }
 @media print {
   .print-root { background: #fff; padding: 0; }

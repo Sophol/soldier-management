@@ -97,9 +97,13 @@ def test_only_the_level_role_or_super_admin_acts(admin, client):
     others = [_login_as(admin, client, f"wf.{r.lower().replace(' ', '')}", r)
               for r in ("Admin", "Assistant", "Chief of Office", "Director")]
     deputy = _login_as(admin, client, "wf.dep", "Deputy Chief of Office")
-    for h in others:
+    for n, h in enumerate(others):
         assert client.post(f"{API}/decisions/{d['id']}/approve", headers=h).status_code == 403
-        assert client.get(f"{API}/decisions/{d['id']}", headers=h).json()["actions"] == []
+        r = client.get(f"{API}/decisions/{d['id']}", headers=h)
+        if n < 2:  # Admin and Assistant enter decisions: they see it, without workflow actions
+            assert r.json()["actions"] == []
+        else:  # higher levels do not even see it before it reaches them (answer.txt)
+            assert r.status_code == 403
     assert client.get(f"{API}/decisions/{d['id']}", headers=deputy).json()["actions"] == ["approve", "return", "reject"]
     r = client.post(f"{API}/decisions/{d['id']}/approve", headers=deputy)
     assert r.status_code == 200 and r.json()["status"] == "chief_office"

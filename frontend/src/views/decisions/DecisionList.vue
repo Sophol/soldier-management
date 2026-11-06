@@ -124,6 +124,7 @@ function setUnit(row, id) {
 }
 
 function openCreate() {
+  clearStaffing()
   const today = todayISO()
   form.value = {
     id: null, decision_no: '', decision_date: today, effective_date: today, issued_by: '', notes: '',
@@ -134,6 +135,7 @@ function openCreate() {
 }
 
 async function openEdit(row) {
+  clearStaffing()
   const { data } = await http.get(`/decisions/${row.id}`)
   form.value = {
     id: data.id, decision_no: data.decision_no, decision_date: data.decision_date, effective_date: data.effective_date,
@@ -143,6 +145,7 @@ async function openEdit(row) {
       soldier_id: i.soldier_id,
       soldier: {
         rank_name: i.old_rank, position_name: i.old_position, unit_name: i.old_unit, institution_name: i.old_institution,
+        unit_id: i.old_unit_id,
         rank_sort: lookups.list('ranks').find((r) => r.id === i.old_rank_id)?.sort_order, // keeps the "higher rank only" filter
       },
       label: `${i.old_rank || ''} ${i.name_kh} (${i.military_id})`, new_rank_id: i.new_rank_id,
@@ -151,6 +154,60 @@ async function openEdit(row) {
   }
   setWarnings(data.general_anomalies, data.items)
   dialog.value = true
+}
+
+// a rejected or cancelled decision as a new draft: the same soldiers and changes, with the soldiers' current records
+async function openCopy(row) {
+  clearStaffing()
+  const { data } = await http.get(`/decisions/${row.id}`)
+  const fresh = await Promise.all(data.items.map((i) => http.get(`/soldiers/${i.soldier_id}`, { silent: true })
+    .then((r) => r.data).catch(() => null)))
+  const today = todayISO()
+  form.value = {
+    id: null, decision_no: '', decision_date: today, effective_date: data.effective_date > today ? data.effective_date : today,
+    issued_by: data.issued_by, incoming_document_id: data.incoming_document_id, incoming_label: data.incoming_no || '',
+    notes: [data.notes, `ចម្លងពីសេចក្ដីសម្រេច${data.decision_no ? ` លេខ ${data.decision_no}` : ''} (${STATUS_TEXT[data.status]})`]
+      .filter(Boolean).join('\n'),
+    items: data.items.map((i, n) => {
+      const sol = fresh[n]
+      return {
+        soldier_id: i.soldier_id, soldier: sol,
+        label: sol ? `${sol.rank_name || ''} ${sol.name_kh} (${sol.military_id})`.trim() : `${i.name_kh} (${i.military_id})`,
+        new_rank_id: i.new_rank_id, new_position_id: i.new_position_id, new_institution_id: institutionOf(i.new_unit_id),
+        new_unit_id: i.new_unit_id, note: i.note,
+      }
+    }),
+  }
+  setWarnings([], [])
+  detail.value = null
+  dialog.value = true
+}
+const canCopy = (d) => ['rejected', 'cancelled'].includes(d.status) && auth.can(`${module.value}.create`)
+
+// ក្របខណ្ឌទំនេរ: the staffing table of the unit each soldier goes to (or stays in), shown while choosing the position
+const staffing = reactive({}) // unit_id -> { position_id: staffing row } ({} = no staffing table, null = loading)
+// the table changes as decisions are approved: read it again each time a form opens
+function clearStaffing() { for (const k of Object.keys(staffing)) delete staffing[k] }
+async function loadStaffing(unitId) {
+  if (!unitId || unitId in staffing) return
+  staffing[unitId] = null
+  try {
+    const { data } = await http.get('/unit-positions', { params: { unit_id: unitId, size: 1000 }, silent: true })
+    staffing[unitId] = Object.fromEntries(data.items.map((r) => [r.position_id, r]))
+  } catch {
+    staffing[unitId] = {} // no permission to see the staffing table: plain list
+  }
+}
+const targetUnit = (row) => row.new_unit_id || row.soldier?.unit_id || null
+watch(() => dialog.value && form.value.items?.map(targetUnit), (ids) => { if (ids) ids.forEach(loadStaffing) }, { deep: true })
+function positionOptions(row) {
+  const all = lookups.list('positions')
+  const table = staffing[targetUnit(row)]
+  if (!table || !Object.keys(table).length) return all.map((p) => ({ ...p, slot: null, outside: false }))
+  // the unit's staffing table first, most vacancies first; then the positions outside it (saving refuses them)
+  const inTable = all.filter((p) => table[p.id]).map((p) => ({ ...p, slot: table[p.id], outside: false }))
+    .sort((a, b) => b.slot.vacant - a.slot.vacant)
+  return [...inTable, ...all.filter((p) => !table[p.id]).map((p) => ({ ...p, slot: null, outside: true }))]
 }
 
 // the form as the API takes it (save, live check and the Excel of the form use the same body)
@@ -247,7 +304,7 @@ const EXPORT_COLUMNS = [
   { label: 'ស្ថាប័នកងឯកភាព', text: (r) => r.institutions.join(', ') },
   { label: 'ចេញដោយ', text: (r) => r.issued_by },
   { label: 'អ្នកដាក់សំណើ', text: (r) => r.created_by_name },
-  { label: 'ស្ថានភាព', text: (r) => STATUS_TEXT[r.status] + (r.overdue ? ' (យឺតយ៉ាវ)' : '') },
+  { label: 'ស្ថានភាព', text: (r) => STATUS_TEXT[r.status] + (r.pending ? ' (រង់ចាំថ្ងៃចូលជាធរមាន)' : '') + (r.overdue ? ' (យឺតយ៉ាវ)' : '') },
   { label: 'ព័ត៌មានខុសប្រក្រតី', text: (r) => r.anomalies.join('\n') },
   { label: 'កំណត់សម្គាល់', text: (r) => r.notes },
 ]
@@ -290,7 +347,13 @@ async function act(row, action) {
     }
   }
   let comment = null
-  if (m.prompt) {
+  if (action === 'cancel') {
+    const { value } = await ElMessageBox.prompt(row.pending
+      ? 'លុបចោលសេចក្ដីសម្រេចនេះ? វាមិនទាន់ចូលជាធរមាន ដូច្នេះព័ត៌មានយោធិនមិនទាន់ផ្លាស់ប្ដូរទេ។ លិខិតចេញនឹងត្រូវកត់ថាលុបចោល។\n\nមូលហេតុ (ស្រេចចិត្ត)'
+      : 'លុបចោលសេចក្ដីសម្រេចដែលបានអនុម័ត? ព័ត៌មានយោធិននឹងត្រឡប់ទៅដូចមុនវិញ ហើយលិខិតចេញនឹងត្រូវកត់ថាលុបចោល។\n\nមូលហេតុ (ស្រេចចិត្ត)',
+    m.label, { type: 'warning', inputType: 'textarea', confirmButtonText: m.label, cancelButtonText: 'បោះបង់', customClass: 'pre-line-box' })
+    comment = value?.trim() || null
+  } else if (m.prompt) {
     const { value } = await ElMessageBox.prompt(m.prompt, m.label, {
       inputType: 'textarea', confirmButtonText: m.label, cancelButtonText: 'បោះបង់',
       inputValidator: (v) => !m.required || !!v?.trim() || 'សូមបញ្ចូលមូលហេតុ',
@@ -319,7 +382,9 @@ async function publish() {
   saving.value = true
   try {
     await http.post(`/decisions/${row.id}/approve`, { decision_no: decision_no || null, decision_date, comment: publishing.value.comment || null })
-    ElMessage.success('បានអនុម័ត ហើយព័ត៌មានយោធិនត្រូវបានធ្វើបច្ចុប្បន្នភាព')
+    ElMessage.success(row.effective_date > todayISO()
+      ? `បានអនុម័ត — ព័ត៌មានយោធិននឹងត្រូវធ្វើបច្ចុប្បន្នភាពនៅថ្ងៃចូលជាធរមាន ${fmtDate(row.effective_date)}`
+      : 'បានអនុម័ត ហើយព័ត៌មានយោធិនត្រូវបានធ្វើបច្ចុប្បន្នភាព')
     publishing.value = null
     await afterAction(row)
   } finally {
@@ -328,8 +393,9 @@ async function publish() {
 }
 
 const stepIndex = (status) => WORKFLOW.findIndex((w) => w.status === status)
-const STEP_ACTION = { submit: 'ដាក់ជូន', approve: 'អនុម័ត', return: 'ត្រឡប់ទៅកែ', reject: 'បដិសេធ', publish: 'ផ្សព្វផ្សាយ', cancel: 'លុបចោល' } // publish: older logs
-const STEP_TYPE = { approve: 'success', publish: 'success', return: 'warning', reject: 'danger', cancel: 'danger', submit: 'primary' }
+const STEP_ACTION = { submit: 'ដាក់ជូន', approve: 'អនុម័ត', return: 'ត្រឡប់ទៅកែ', reject: 'បដិសេធ', publish: 'ផ្សព្វផ្សាយ', cancel: 'លុបចោល', // publish: older logs
+  apply: 'ចូលជាធរមាន (បានធ្វើបច្ចុប្បន្នភាពយោធិន)', apply_failed: 'មិនអាចអនុវត្តនៅថ្ងៃចូលជាធរមាន' }
+const STEP_TYPE = { approve: 'success', publish: 'success', apply: 'success', return: 'warning', reject: 'danger', cancel: 'danger', apply_failed: 'danger', submit: 'primary' }
 
 async function remove(row) {
   await ElMessageBox.confirm('លុបសេចក្ដីព្រាងនេះ?', 'បញ្ជាក់', { type: 'warning' })
@@ -441,6 +507,9 @@ onMounted(load)
           <template #default="{ row }">
             <el-tag :type="STATUS_TAG[row.status]" size="small">{{ STATUS_TEXT[row.status] }}</el-tag>
             <el-tag v-if="row.overdue" type="danger" size="small" effect="dark" class="overdue">យឺតយ៉ាវ</el-tag>
+            <el-tooltip v-if="row.pending" :content="row.apply_error || `ព័ត៌មានយោធិននឹងផ្លាស់ប្ដូរនៅថ្ងៃ ${fmtDate(row.effective_date)}`" placement="top">
+              <el-tag :type="row.apply_error ? 'danger' : 'warning'" size="small" class="overdue">{{ row.apply_error ? 'មិនអាចអនុវត្ត' : 'រង់ចាំថ្ងៃចូលជាធរមាន' }}</el-tag>
+            </el-tooltip>
             <el-tooltip v-if="row.anomalies.length" placement="top">
               <template #content><div v-for="a in row.anomalies" :key="a">{{ a }}</div></template>
               <el-tag type="warning" size="small" class="overdue">ខុសប្រក្រតី {{ num(row.anomalies.length) }}</el-tag>
@@ -456,6 +525,9 @@ onMounted(load)
             </el-tooltip>
             <el-button v-if="row.actions.includes('edit')" link type="primary" icon="Edit" @click="openEdit(row)" />
             <el-button v-for="a in workflowActions(row)" :key="a" link :type="ACTIONS[a].type" :icon="ACTIONS[a].icon" @click="act(row, a)">{{ ACTIONS[a].label }}</el-button>
+            <el-tooltip v-if="canCopy(row)" content="ចម្លងជាសំណើថ្មី">
+              <el-button link type="primary" icon="CopyDocument" @click="openCopy(row)" />
+            </el-tooltip>
             <el-button v-if="row.actions.includes('delete')" link type="danger" icon="Delete" @click="remove(row)" />
           </template>
         </el-table-column>
@@ -507,10 +579,14 @@ onMounted(load)
               </el-select>
             </template>
           </el-table-column>
-          <el-table-column v-if="showPosition" label="មុខតំណែងថ្មី" width="190">
+          <el-table-column v-if="showPosition" label="មុខតំណែងថ្មី (ទំនេរ/ក្របខណ្ឌ)" width="230">
             <template #default="{ row }">
-              <el-select v-model="row.new_position_id" filterable clearable>
-                <el-option v-for="p in lookups.list('positions')" :key="p.id" :value="p.id" :label="p.name_kh" />
+              <el-select v-model="row.new_position_id" filterable clearable popper-class="slot-popper">
+                <el-option v-for="p in positionOptions(row)" :key="p.id" :value="p.id" :label="p.name_kh">
+                  <span>{{ p.name_kh }}</span>
+                  <span v-if="p.slot" class="slot" :class="{ full: p.slot.vacant <= 0 }">ទំនេរ {{ num(Math.max(p.slot.vacant, 0)) }}/{{ num(p.slot.quota) }}</span>
+                  <span v-else-if="p.outside" class="slot full">ក្រៅក្របខណ្ឌ</span>
+                </el-option>
               </el-select>
             </template>
           </el-table-column>
@@ -555,7 +631,8 @@ onMounted(load)
           <el-descriptions-item label="ថ្ងៃខែឆ្នាំ">{{ fmtDate(detail.decision_date) }}</el-descriptions-item>
           <el-descriptions-item label="ចូលជាធរមាន">{{ fmtDate(detail.effective_date) }}</el-descriptions-item>
           <el-descriptions-item label="ស្ថានភាព"><el-tag :type="STATUS_TAG[detail.status]">{{ STATUS_TEXT[detail.status] }}</el-tag>
-            <el-tag v-if="detail.overdue" type="danger" effect="dark" class="overdue">យឺតយ៉ាវ</el-tag></el-descriptions-item>
+            <el-tag v-if="detail.overdue" type="danger" effect="dark" class="overdue">យឺតយ៉ាវ</el-tag>
+            <el-tag v-if="detail.pending" type="warning" class="overdue">រង់ចាំថ្ងៃចូលជាធរមាន</el-tag></el-descriptions-item>
           <el-descriptions-item label="ចេញដោយ" :span="2">{{ detail.issued_by }}</el-descriptions-item>
           <el-descriptions-item label="ឯកសារចូល (សំណើ)">{{ detail.incoming_no || '-' }}</el-descriptions-item>
           <el-descriptions-item label="ឯកសារចេញ" :span="2">{{ detail.outgoing_no || '-' }}</el-descriptions-item>
@@ -565,6 +642,10 @@ onMounted(load)
                   finish-status="success" align-center class="wf-steps">
           <el-step v-for="w in WORKFLOW" :key="w.status" :title="w.step" />
         </el-steps>
+        <el-alert v-if="detail.pending" :type="detail.apply_error ? 'error' : 'info'" show-icon :closable="false" style="margin-top: 14px"
+                  :title="detail.apply_error
+                    ? `មិនអាចធ្វើបច្ចុប្បន្នភាពយោធិននៅថ្ងៃចូលជាធរមានបានទេ៖ ${detail.apply_error}`
+                    : `បានអនុម័តហើយ — ព័ត៌មានយោធិននឹងត្រូវធ្វើបច្ចុប្បន្នភាពនៅថ្ងៃចូលជាធរមាន ${fmtDate(detail.effective_date)}`" />
         <template v-if="detail.general_anomalies?.length || detailWarned">
           <div class="section-title">ព័ត៌មានខុសប្រក្រតី</div>
           <el-alert v-for="a in detail.general_anomalies" :key="a" :title="a" type="warning" show-icon :closable="false" style="margin-bottom: 6px" />
@@ -605,7 +686,7 @@ onMounted(load)
         <div class="section-title">កំណត់ត្រាអនុម័ត</div>
         <el-timeline v-if="detail.steps?.length">
           <el-timeline-item v-for="st in detail.steps" :key="st.id" :timestamp="fmtDateTime(st.created_at)" :type="STEP_TYPE[st.action]">
-            <b>{{ STEP_ACTION[st.action] }}</b> — {{ st.user_name }}
+            <b>{{ STEP_ACTION[st.action] }}</b> — {{ st.user_name || 'ប្រព័ន្ធ' }}
             <span class="muted small">({{ st.from_name }} → {{ st.to_name }})</span>
             <div v-if="st.comment" class="comment">{{ st.comment }}</div>
           </el-timeline-item>
@@ -617,6 +698,7 @@ onMounted(load)
           <el-button icon="Printer" @click="router.push(`/decisions/${detail.id}/print`)">បោះពុម្ព</el-button>
           <el-button v-if="auth.can(`${module}.export`)" icon="Download" :loading="downloading" @click="exportDecision(detail)">ទាញយកសំណើ (Excel)</el-button>
           <el-button v-for="a in workflowActions(detail)" :key="a" :type="ACTIONS[a].type" :icon="ACTIONS[a].icon" @click="act(detail, a)">{{ ACTIONS[a].label }}</el-button>
+          <el-button v-if="canCopy(detail)" icon="CopyDocument" @click="openCopy(detail)">ចម្លងជាសំណើថ្មី</el-button>
         </div>
       </template>
     </el-drawer>
@@ -625,7 +707,9 @@ onMounted(load)
     <el-dialog :model-value="!!publishing" title="នាយកអនុម័ត" width="520px" @close="publishing = null">
       <template v-if="publishing">
         <el-alert type="info" show-icon :closable="false" style="margin-bottom: 12px"
-                  title="ការអនុម័តនេះជាការសម្រេចចុងក្រោយ៖ ប្រព័ន្ធនឹងចុះលេខលិខិតចេញ ហើយធ្វើបច្ចុប្បន្នភាពប្រវត្តិរូបយោធិនទាំងអស់។" />
+                  :title="publishing.row.effective_date > todayISO()
+                    ? `ការអនុម័តនេះជាការសម្រេចចុងក្រោយ៖ ប្រព័ន្ធនឹងចុះលេខលិខិតចេញឥឡូវ ហើយធ្វើបច្ចុប្បន្នភាពប្រវត្តិរូបយោធិននៅថ្ងៃចូលជាធរមាន ${fmtDate(publishing.row.effective_date)}។`
+                    : 'ការអនុម័តនេះជាការសម្រេចចុងក្រោយ៖ ប្រព័ន្ធនឹងចុះលេខលិខិតចេញ ហើយធ្វើបច្ចុប្បន្នភាពប្រវត្តិរូបយោធិនទាំងអស់។'" />
         <el-alert v-if="publishing.row.anomalies?.length" type="warning" show-icon :closable="false" style="margin-bottom: 12px"
                   :title="`មានព័ត៌មានខុសប្រក្រតី ${num(publishing.row.anomalies.length)}`">
           <ul class="anomalies"><li v-for="a in publishing.row.anomalies" :key="a">{{ a }}</li></ul>
@@ -662,6 +746,9 @@ onMounted(load)
 /* what saving would refuse, above the warnings of the same soldier */
 .anomalies li.error { color: var(--el-color-danger); font-weight: 600; }
 :deep(.error-row) > td.el-table__cell { background: var(--el-color-danger-light-9) !important; }
+/* vacancies of the staffing table next to each position (the dropdown is teleported: not scoped) */
+:global(.slot-popper .slot) { float: right; margin-left: 12px; font-size: 12px; color: var(--el-color-success); }
+:global(.slot-popper .slot.full) { color: var(--el-color-danger); }
 /* the Excel button sits on the left of the dialog footer, away from save / close */
 .footer-left { float: left; }
 </style>

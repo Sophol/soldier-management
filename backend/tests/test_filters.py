@@ -192,3 +192,18 @@ def test_policy_fields_and_filters(admin):
     assert _ids(admin, **scope, base_province_id=1, voting_district_id=102) == {a["id"]}
     prof = admin.get(f"{API}/soldiers/{a['id']}/profile").json()
     assert prof["housing_status_name"] == "ជួល" and prof["voting_village_text"] and prof["base_village_text"]
+
+
+def test_search_by_military_id_with_or_without_zeros_and_in_khmer_digits(admin):
+    lk = _lookups(admin)
+    _, unit, _ = _units(admin)
+    s = _soldier(admin, lk, unit["id"], mid="652")  # kept as 000652
+    assert s["military_id"] == "000652"
+    for q in ("000652", "652", "០០០៦៥២", "៦៥២"):
+        ids = [x["id"] for x in admin.get(f"{API}/soldiers", params={"q": q}).json()["items"]]
+        assert s["id"] in ids, q
+    d = admin.post(f"{API}/decisions", json={"kind": "promote", "decision_no": "Q-1", "decision_date": "2025-01-01",
+                                             "effective_date": "2025-01-01",
+                                             "items": [{"soldier_id": s["id"], "new_rank_id": lk["ranks"][-4]["id"]}]}).json()
+    found = admin.get(f"{API}/decisions", params={"kind": "promote", "q": "០០០៦៥២"}).json()["items"]
+    assert d["id"] in [x["id"] for x in found]

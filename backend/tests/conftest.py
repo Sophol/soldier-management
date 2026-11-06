@@ -1,12 +1,16 @@
 """Tests run against the configured MySQL database inside one outer transaction that is
 rolled back at the end, so no test data is left behind. Requires migrations + seed."""
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.database import engine, get_db
-from app.main import app
+os.environ.setdefault("DECISION_APPLY_MINUTES", "0")  # no background job inside the tests
+
+from app.core.database import engine, get_db  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 @pytest.fixture()

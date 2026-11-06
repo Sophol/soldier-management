@@ -1,12 +1,50 @@
+import logging
+import threading
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.v1 import conscripts, decisions, documents, master, records, reports, soldiers, system
 from app.core.config import settings
-from app.core.database import engine
+from app.core.database import SessionLocal, engine
 
-app = FastAPI(title="Soldier Management API", version="1.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+log = logging.getLogger("decisions")
+
+
+def _apply_due_once() -> None:
+    db = SessionLocal()
+    try:
+        if n := decisions.apply_due(db):
+            log.info("applied %s decision(s) that came into effect", n)
+        db.commit()
+    except Exception:  # never let the job die: try again at the next run
+        db.rollback()
+        log.exception("applying decisions that came into effect failed")
+    finally:
+        db.close()
+
+
+def _apply_due_loop(stop: threading.Event) -> None:
+    """Approved decisions with a future effective date change the soldiers' records on that date."""
+    while True:
+        _apply_due_once()
+        if stop.wait(settings.DECISION_APPLY_MINUTES * 60):
+            return
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    stop = threading.Event()
+    if settings.DECISION_APPLY_MINUTES > 0:
+        threading.Thread(target=_apply_due_loop, args=(stop,), name="apply-due-decisions", daemon=True).start()
+    yield
+    stop.set()
+
+
+app = FastAPI(title="Soldier Management API", version="1.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json",
+              lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

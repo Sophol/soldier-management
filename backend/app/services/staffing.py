@@ -45,18 +45,29 @@ def filled_by_rank(db: Session) -> dict[int, int]:
 
 
 def staffing_problems(db: Session, s: Soldier, *, unit_id, position_id, rank_id, slot_changes: bool,
-                      rank_changes: bool, label: str, planned_slot: int = 0, planned_rank: int = 0) -> list[str]:
+                      rank_changes: bool, label: str, planned_slot: int = 0, planned_rank: int = 0,
+                      leaving_slot: frozenset[int] = frozenset(), leaving_rank: frozenset[int] = frozenset()) -> list[str]:
     """Reasons a decision would break the staffing table (ក្របខណ្ឌ) or a rank quota; decisions are refused while
     any remain (New.txt §4: appointments must be checked against the staffing table and the rank).
     slot_changes: the soldier moves into unit_id/position_id; rank_changes: the soldier gets rank_id.
-    planned_*: other soldiers of the same decision already going into the same slot / rank."""
+    planned_*: other soldiers of the same decision already going into the same slot / rank.
+    leaving_*: soldiers of the same decision who leave that slot / rank (not counted, so a swap or a replacement
+    within one decision fits a full table)."""
     problems = []
     rank = db.get(Rank, rank_id) if rank_id else None
+    if not slot_changes and rank_changes and rank and s.current_unit_id and s.current_position_id:
+        # a promotion in the same position: the new rank must not go above the position's highest rank
+        up = db.scalar(select(UnitPosition).where(UnitPosition.unit_id == s.current_unit_id,
+                                                  UnitPosition.position_id == s.current_position_id))
+        high = db.get(Rank, up.max_rank_id) if up is not None and up.max_rank_id else None
+        if high and rank.sort_order > high.sort_order:
+            problems.append(f"{label}: ឋានន្តរស័ក្តិ {rank.name_kh} ខ្ពស់ជាងឋានន្តរស័ក្តិអតិបរមារបស់មុខតំណែង "
+                            f"{up.position.name_kh} ក្នុង {up.unit.name_kh} ({high.name_kh})")
     if slot_changes and unit_id and position_id:
         up = db.scalar(select(UnitPosition).where(UnitPosition.unit_id == unit_id, UnitPosition.position_id == position_id))
         if up is not None:
             filled = filled_count(db, Soldier.current_unit_id == unit_id, Soldier.current_position_id == position_id,
-                                  Soldier.id != s.id) + planned_slot
+                                  Soldier.id != s.id, Soldier.id.not_in(list(leaving_slot) or [0])) + planned_slot
             if filled >= up.quota:
                 problems.append(f"{label}: មុខតំណែង {up.position.name_kh} ក្នុង {up.unit.name_kh} "
                                 f"ពេញក្របខណ្ឌហើយ ({filled}/{up.quota})")
@@ -69,7 +80,8 @@ def staffing_problems(db: Session, s: Soldier, *, unit_id, position_id, rank_id,
             # a unit that has a staffing table only takes the positions listed in it
             problems.append(f"{label}: មុខតំណែងនេះមិនមានក្នុងក្របខណ្ឌរបស់អង្គភាព")
     if rank_changes and rank and rank.quota is not None:
-        filled = filled_count(db, Soldier.current_rank_id == rank.id, Soldier.id != s.id) + planned_rank
+        filled = filled_count(db, Soldier.current_rank_id == rank.id, Soldier.id != s.id,
+                              Soldier.id.not_in(list(leaving_rank) or [0])) + planned_rank
         if filled >= rank.quota:
             problems.append(f"{label}: ឋានន្តរស័ក្តិ {rank.name_kh} ពេញចំនួនកំណត់ហើយ ({filled}/{rank.quota})")
     return problems

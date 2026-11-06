@@ -14,7 +14,7 @@ from sqlalchemy import and_, case, extract, false, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.api.v1.conscripts import registration_counts
-from app.api.v1.decisions import IN_PROGRESS, _in_scope_condition, can_act_at, overdue_cutoff
+from app.api.v1.decisions import IN_PROGRESS, can_act_at, overdue_cutoff, visible_condition
 from app.api.v1.records import (
     CAMBODIA_IDS,
     CASE_STATUS,
@@ -217,6 +217,8 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
     # decisions still in the approval workflow, per kind; those waiting at a step this user acts on; overdue ones
     live = select(Decision.kind, Decision.status, Decision.status_changed_at).where(
         Decision.deleted_at.is_(None), Decision.status.in_(IN_PROGRESS))
+    if (visible := visible_condition(db, user)) is not None:  # what the lists behind these counts show
+        live = live.where(visible)
     in_workflow = db.execute(live).all()
     pending = defaultdict(int)
     for k, _, _ in in_workflow:
@@ -729,7 +731,7 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
         cols = [("kind", "ប្រភេទសំណើ")] + [(st, DECISION_STATUSES[st]) for st in statuses] + [("total", "សរុប")]
         stmt = select(Decision.kind, Decision.status, func.count(Decision.id)).where(
             Decision.deleted_at.is_(None), Decision.decision_date.between(df, dt))
-        if (visible := _in_scope_condition(db, user)) is not None:
+        if (visible := visible_condition(db, user)) is not None:
             stmt = stmt.where(visible)
         if unit_ids is not None:
             stmt = stmt.where(Decision.id.in_(select(DecisionItem.decision_id).where(

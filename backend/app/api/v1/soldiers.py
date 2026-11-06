@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import Select, extract, func, or_, select
+from sqlalchemy import Select, and_, extract, func, or_, select
 from sqlalchemy.dialects.mysql import match as mysql_match
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -51,6 +51,7 @@ from app.services.common import (
     unit_subtree_ids,
 )
 from app.services.soldier import (
+    KH_DIGITS,
     add_history,
     add_movement,
     age,
@@ -108,12 +109,24 @@ NGRAM_TOKEN_SIZE = 2  # MySQL's default ngram_token_size: shorter text cannot us
 def search_clause(db: Session, q: str):
     """Free-text search: q found anywhere in the name, Latin name, military ID, national ID or phone.
     MySQL answers it from the ngram FULLTEXT index ft_soldiers_search (a phrase of ngrams = "contains");
-    PostgreSQL answers ILIKE '%q%' from the pg_trgm indexes. Both come from migration d4e7a1c90b52."""
+    PostgreSQL answers ILIKE '%q%' from the pg_trgm indexes. Both come from migration d4e7a1c90b52.
+    A number (military ID, national ID, phone; Khmer digits read as 0-9) is compared on those columns directly,
+    without the FULLTEXT index: an ID must always be found, even if that index misses a row."""
     q = q.strip()
-    if db.get_bind().dialect.name == "mysql" and len(q.replace('"', "")) >= NGRAM_TOKEN_SIZE:
-        return mysql_match(*SEARCH_COLUMNS, against='"' + q.replace('"', " ") + '"').in_boolean_mode()
-    like = f"%{q}%"
-    return or_(*(col.ilike(like) for col in SEARCH_COLUMNS))
+    digits = q.translate(KH_DIGITS)
+    if re.fullmatch(r"[0-9]+", digits):
+        like = f"%{digits}%"
+        return or_(Soldier.military_id.like(like), Soldier.national_id.like(like), Soldier.phone.like(like))
+    like = or_(*(col.ilike(f"%{q}%") for col in SEARCH_COLUMNS))
+    words = q.replace('"', " ").split()
+    indexed = [w for w in words if len(w) >= NGRAM_TOKEN_SIZE]
+    if db.get_bind().dialect.name != "mysql" or not indexed:
+        return like
+    if len(words) == 1:
+        return mysql_match(*SEARCH_COLUMNS, against=f'"{words[0]}"').in_boolean_mode()
+    # several words: the index narrows to rows having every word long enough to be indexed (a one-letter family
+    # name such as "ស" is not), then the whole text must be found as typed
+    return and_(mysql_match(*SEARCH_COLUMNS, against=" ".join(f'+"{w}"' for w in indexed)).in_boolean_mode(), like)
 
 
 def build_query(db: Session, user: User, *, q=None, rank_id=None, rank_class_id=None, branch=None, unit_id=None,

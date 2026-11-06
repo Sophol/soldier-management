@@ -22,6 +22,8 @@ const RETIREMENT_TYPES = options({ pension: 'សោធននិវត្តន�
   disability: 'ពិការ', death: 'ស្លាប់' })
 const CATEGORY2_TYPES = options({ fallen: 'ពលី', fallen_dead: 'ពលី-មរណ', disabled: 'ពិការ' })
 const CASE_STATUS = options({ submitted: 'ដាក់ឯកសារ', processing: 'កំពុងដំណើរការ', done: 'រួចរាល់' })
+const DOC_OUT_STATUS_TEXT = { sent: 'បានចេញ', cancelled: 'លុបចោល' }
+const DOC_OUT_STATUS = options(DOC_OUT_STATUS_TEXT)
 const DISCIPLINE_STATUS = options({ active: 'កំពុងអនុវត្ត', expired: 'ផុតកំណត់', cancelled: 'លុបចោល' })
 const CARD_STATUS = options({ issued: 'ចេញរួច', pending: 'មិនទាន់ចេញ', expired: 'ផុតកំណត់', lost: 'បាត់', replaced: 'ជំនួស' })
 const EXPIRING = [30, 60, 90].map((d) => ({ value: d, label: `ក្នុង ${d} ថ្ងៃ` }))
@@ -111,6 +113,8 @@ export const configs = {
       { key: 'unit_name', label: 'អង្គភាព', minWidth: 140 },
       { key: 'recipient_name', label: 'អ្នកទទួល', width: 130 },
       { key: 'recipient_phone', label: 'លេខទូរសព្ទអ្នកទទួល', width: 140 },
+      // a letter of a decision that was cancelled is marked cancelled (its remarks say when and why)
+      { key: 'status', label: 'ស្ថានភាព', width: 100, value: (r) => DOC_OUT_STATUS_TEXT[r.status] || r.status, tag: (r) => (r.status === 'cancelled' ? 'danger' : 'success') },
     ],
     filters: [{ key: 'document_type_id', label: 'ប្រភេទ', type: 'select', options: 'document_types' },
       { key: 'unit_id', label: 'អង្គភាព', type: 'unit' }, ...dateRange],
@@ -122,6 +126,7 @@ export const configs = {
       { key: 'unit_id', label: 'អង្គភាព', type: 'unit', span: 12 },
       { key: 'recipient_name', label: 'អ្នកទទួល', span: 12 },
       { key: 'recipient_phone', label: 'លេខទូរសព្ទអ្នកទទួល', span: 12 },
+      { key: 'status', label: 'ស្ថានភាព', type: 'select', options: DOC_OUT_STATUS, default: 'sent', span: 12 },
       { key: 'remarks', label: 'កំណត់សម្គាល់', type: 'textarea', rows: 2 },
     ],
   },
