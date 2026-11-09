@@ -30,6 +30,7 @@ export default {
     appoint: 'Appointments',
     transfer: 'Transfers & promotion',
     promote: 'Rank promotions',
+    rankPositionUpdate: 'Update rank & position',
     training: 'Training',
     education: 'Education levels',
     specialtyTraining: 'Specialties',

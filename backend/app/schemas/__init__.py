@@ -416,6 +416,53 @@ class StrengthIn(In):
     note: str | None = None
 
 
+# ការផ្លាស់ប្ដូរស្ថាប័នកងឯកភាព for many soldiers at once (military IDs pasted)
+IN_REASONS = ("transfer_in", "internal", "outside_in", "recruit", "reinstate", "other")
+OUT_REASONS = ("transfer_out", "other")
+
+
+class StrengthBulkCheckIn(In):
+    military_ids: str = Field(max_length=100_000)  # one per line, or separated by commas/spaces
+    direction: Literal["in", "out"] = "in"
+    reason: str | None = None
+    unit_id: int | None = None  # the ស្ថាប័នកងឯកភាព (or a unit inside it) they join / leave
+
+
+class StrengthBulkIn(In):
+    soldier_ids: list[int] = Field(min_length=1, max_length=1000)
+    direction: Literal["in", "out"]
+    reason: str
+    unit_id: int
+    movement_date: date
+    note: str | None = None
+
+
+# Update ស័ក្តិ និងមុខតំណែង: many soldiers' rank / position (and their dates) at once, from an incoming document
+class RankPositionValues(In):
+    rank_id: int | None = None  # None = the soldier's value is kept
+    rank_date: date | None = None
+    position_id: int | None = None
+    position_date: date | None = None
+    unit_id: int | None = None
+    unit_date: date | None = None  # ថ្ងៃផ្លាស់អង្គភាព
+
+
+class RankPositionItem(RankPositionValues):
+    soldier_id: int
+
+
+class RankPositionCheckIn(In):
+    military_ids: str | None = Field(None, max_length=100_000)  # IDs to add, one per line or separated by commas/spaces
+    defaults: RankPositionValues = RankPositionValues()  # values given to the soldiers added
+    items: list[RankPositionItem] = Field([], max_length=1000)  # the soldiers already listed, with their values
+
+
+class RankPositionIn(In):
+    incoming_document_id: int | None = None  # ឯកសារចូល
+    note: str | None = Field(None, max_length=300)
+    items: list[RankPositionItem] = Field(min_length=1, max_length=1000)
+
+
 # ---------- conscription (យុវជនបំពេញកាតព្វកិច្ចយោធា) ----------
 
 class ConscriptIn(In):

@@ -13,8 +13,8 @@ const auth = useAuth()
 const s = ref(null)
 const separated = computed(() => !!s.value?.separated)
 const tab = ref('info')
-const KIND = { initial: 'ទិន្នន័យដំបូង', appoint: 'តែងតាំង', transfer: 'ផ្លាស់ប្ដូរ', promote: 'ដំឡើងស័ក្តិ', correction: 'កែតម្រូវ' }
-const KIND_TYPE = { initial: 'info', appoint: 'primary', transfer: 'warning', promote: 'success', correction: 'danger' }
+const KIND = { initial: 'ទិន្នន័យដំបូង', appoint: 'តែងតាំង', transfer: 'ផ្លាស់ប្ដូរ', promote: 'ដំឡើងស័ក្តិ', correction: 'កែតម្រូវ', update: 'Update ស័ក្តិ/មុខតំណែង' }
+const KIND_TYPE = { initial: 'info', appoint: 'primary', transfer: 'warning', promote: 'success', correction: 'danger', update: 'success' }
 const EDU_KIND = { general: 'វប្បធម៌ទូទៅ', specialty: 'ជំនាញឯកទេស', other: 'ក្រៅពីជំនាញ' }
 
 onMounted(async () => {

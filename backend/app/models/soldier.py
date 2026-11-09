@@ -14,7 +14,7 @@ class Soldier(AuditMixin, SoftDeleteMixin, Base):
     name_kh: Mapped[str] = mapped_column(String(255), index=True)  # គោត្តនាមនិងនាម
     name_latin: Mapped[str | None] = mapped_column(String(255), index=True)
     gender: Mapped[str] = mapped_column(String(1))  # M / F
-    date_of_birth: Mapped[date | None] = mapped_column(Date)
+    date_of_birth: Mapped[date | None] = mapped_column(Date, index=True)
     national_id: Mapped[str | None] = mapped_column(String(50), unique=True)
     national_id_expiry: Mapped[date | None] = mapped_column(Date, index=True)  # ថ្ងៃផុតកំណត់អត្តសញ្ញាណប័ណ្ណ
     nationality: Mapped[str | None] = mapped_column(String(50), default="ខ្មែរ")  # សញ្ជាតិ

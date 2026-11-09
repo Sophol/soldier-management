@@ -77,12 +77,12 @@ def test_category2_soldier_leaves_the_serving_strength(admin):
     lk = _lookups(admin)
     _, unit, _ = _units(admin)
     s = _soldier(admin, lk, unit["id"], mid="TEST-CAT2")
-    before = admin.get(f"{API}/dashboard/summary").json()
+    before = admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()
     r = admin.post(f"{API}/category2", json={"soldier_id": s["id"], "type": "fallen", "effective_date": "2025-02-01"})
     assert r.status_code == 201, r.text
     rec = r.json()
     assert rec["type_name"] == "ពលី"
-    after = admin.get(f"{API}/dashboard/summary").json()
+    after = admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()
     assert after["total_active"] == before["total_active"] - 1
     assert after["categories"]["category2"] == before["categories"]["category2"] + 1
     assert after["categories"]["category2_by_type"]["fallen"] == before["categories"]["category2_by_type"]["fallen"] + 1
@@ -93,7 +93,7 @@ def test_category2_soldier_leaves_the_serving_strength(admin):
     r = admin.post(f"{API}/category2", json={"soldier_id": s["id"], "type": "disabled", "effective_date": "2025-03-01"})
     assert r.status_code == 400
     assert admin.delete(f"{API}/category2/{rec['id']}").status_code == 200
-    assert admin.get(f"{API}/dashboard/summary").json()["total_active"] == before["total_active"]
+    assert admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()["total_active"] == before["total_active"]
 
 
 def test_retired_soldier_leaves_the_serving_strength(admin):
@@ -101,14 +101,14 @@ def test_retired_soldier_leaves_the_serving_strength(admin):
     lk = _lookups(admin)
     _, unit, _ = _units(admin)
     s = _soldier(admin, lk, unit["id"], mid="TEST-RET1")
-    before = admin.get(f"{API}/dashboard/summary").json()["total_active"]
+    before = admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()["total_active"]
     r = admin.post(f"{API}/retirements", json={"soldier_id": s["id"], "type": "pension", "effective_date": "2025-01-01"})
     assert r.status_code == 201, r.text
-    assert admin.get(f"{API}/dashboard/summary").json()["total_active"] == before - 1
+    assert admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()["total_active"] == before - 1
     serving = admin.get(f"{API}/soldiers", params={"military_ids": "TEST-RET1", "serving": True}).json()
     assert serving["total"] == 0
     assert admin.delete(f"{API}/retirements/{r.json()['id']}").status_code == 200
-    assert admin.get(f"{API}/dashboard/summary").json()["total_active"] == before
+    assert admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()["total_active"] == before
 
 
 def test_military_id_has_six_digits(admin):
@@ -129,7 +129,7 @@ def test_dashboard_studying_counts(admin):
     lk = _lookups(admin)
     _, unit, _ = _units(admin)
     a, b, c = (_soldier(admin, lk, unit["id"], mid=f"TEST-ST{i}") for i in range(3))
-    before = admin.get(f"{API}/dashboard/summary").json()["studying"]
+    before = admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()["studying"]
     china = admin.post(f"{API}/countries", json={"name_kh": "ប្រទេសចិន TEST"}).json()
     r = admin.post(f"{API}/training/courses", json={
         "name": "វគ្គ ST abroad", "course_type": "short", "country_id": china["id"],
@@ -139,7 +139,7 @@ def test_dashboard_studying_counts(admin):
         "name": "វគ្គ ST home", "course_type": "long", "start_date": "2025-01-01",
         "participants": [{"soldier_id": c["id"], "status": "studying"}]})
     assert r.status_code == 201, r.text
-    after = admin.get(f"{API}/dashboard/summary").json()["studying"]
+    after = admin.get(f"{API}/dashboard/summary", params={"refresh": True}).json()["studying"]
     assert after == {"in_country": before["in_country"] + 1, "abroad": before["abroad"] + 1}
     abroad = admin.get(f"{API}/training/courses", params={"abroad": "yes", "q": "វគ្គ ST"}).json()["items"]
     assert [x["name"] for x in abroad] == ["វគ្គ ST abroad"]

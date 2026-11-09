@@ -6,9 +6,10 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api.v1 import conscripts, decisions, documents, master, records, reports, soldiers, system
+from app.api.v1 import conscripts, decisions, documents, exports, master, records, reports, soldiers, system
 from app.core.config import settings
 from app.core.database import SessionLocal, engine
+from app.services import maintenance
 
 log = logging.getLogger("decisions")
 
@@ -34,11 +35,28 @@ def _apply_due_loop(stop: threading.Event) -> None:
             return
 
 
+def _maintenance_loop(stop: threading.Event) -> None:
+    """The activity-log retention and the old Excel exports (services/maintenance.py), every MAINTENANCE_MINUTES."""
+    wait = 60  # the first run a minute after the start, then every MAINTENANCE_MINUTES
+    while not stop.wait(wait):
+        wait = settings.MAINTENANCE_MINUTES * 60
+        db = SessionLocal()
+        try:
+            maintenance.run_once(db)
+        except Exception:
+            db.rollback()
+            logging.getLogger("maintenance").exception("maintenance failed")
+        finally:
+            db.close()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     stop = threading.Event()
     if settings.DECISION_APPLY_MINUTES > 0:
         threading.Thread(target=_apply_due_loop, args=(stop,), name="apply-due-decisions", daemon=True).start()
+    if settings.MAINTENANCE_MINUTES > 0:
+        threading.Thread(target=_maintenance_loop, args=(stop,), name="maintenance", daemon=True).start()
     yield
     stop.set()
 
@@ -56,7 +74,7 @@ app.add_middleware(
 )
 
 api = APIRouter(prefix="/api/v1")
-for module in (system, master, soldiers, documents, decisions, records, conscripts, reports):
+for module in (system, master, soldiers, documents, decisions, records, conscripts, reports, exports):
     api.include_router(module.router)
 app.include_router(api)
 

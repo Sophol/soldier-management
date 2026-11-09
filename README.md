@@ -55,7 +55,25 @@ docker compose exec api python -m scripts.import_geo --source-dir /data/source
 docker compose exec api python -m scripts.seed --source-dir /data/source --admin-password '<strong password>'
 ```
 
-Back up the `db_data` volume (mysqldump) and the `storage` volume (photos and attachments) every day.
+### Backups
+
+The `backup` service copies the database (`backups/db/sm-YYYY-MM-DD_HHMM.sql.gz`, the last `BACKUP_KEEP_DAYS` days)
+and the uploaded files (`backups/storage/`) every day at `BACKUP_TIME` (see `.env.example`), and once at start when
+there is no copy of the day yet. Copy the `backups` folder to another disk or machine regularly.
+
+```bash
+docker compose run --rm backup now           # one backup now
+docker compose logs backup                   # what the last backups did
+# restore a database copy (replaces the current data):
+gunzip < backups/db/sm-2026-11-09_0100.sql.gz | docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" soldier-management'
+```
+
+### Large data (hundreds of thousands of soldiers)
+
+- Dashboard figures are counted in the background and kept for `dashboard_refresh_minutes` (system settings).
+- Soldier and report Excel files are made in the background and downloaded when ready (kept 24 hours).
+- The activity log is trimmed to `audit_retention_years` (system settings; 0 = keep everything) every hour.
+- Give MySQL memory: add `--innodb-buffer-pool-size=6G` (about half the machine's RAM) to the `db` command.
 
 ## Project layout
 

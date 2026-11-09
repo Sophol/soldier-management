@@ -22,6 +22,17 @@ const RETIREMENT_TYPES = options({ pension: 'សោធននិវត្តន�
   disability: 'ពិការ', death: 'ស្លាប់' })
 const CATEGORY2_TYPES = options({ fallen: 'ពលី', fallen_dead: 'ពលី-មរណ', disabled: 'ពិការ' })
 const CASE_STATUS = options({ submitted: 'ដាក់ឯកសារ', processing: 'កំពុងដំណើរការ', done: 'រួចរាល់' })
+// ការងារកើនថយ: reasons of a movement (in = កើន, out = ថយ, both = either); the backend's MOVEMENT_REASONS
+export const MOVEMENT_REASON_LIST = [
+  { value: 'transfer_in', label: 'ផ្លាស់មកពីអង្គភាពផ្សេង', dir: 'in' },
+  { value: 'internal', label: 'ផ្លាស់ប្ដូរផ្ទៃក្នុង', dir: 'in' }, // its paired "out" row is written automatically
+  { value: 'outside_in', label: 'កើនក្រៅស្ថាប័នកងឯកភាព', dir: 'in' },
+  { value: 'recruit', label: 'ចូលបម្រើថ្មី', dir: 'in' },
+  { value: 'reinstate', label: 'ចូលបម្រើវិញ', dir: 'in' },
+  { value: 'transfer_out', label: 'ផ្លាស់ទៅអង្គភាពផ្សេង', dir: 'out' },
+  { value: 'other', label: 'ផ្សេងៗ', dir: 'both' },
+]
+const MOVEMENT_REASONS = MOVEMENT_REASON_LIST.map(({ value, label }) => ({ value, label }))
 const DOC_OUT_STATUS_TEXT = { sent: 'បានចេញ', cancelled: 'លុបចោល' }
 const DOC_OUT_STATUS = options(DOC_OUT_STATUS_TEXT)
 const DISCIPLINE_STATUS = options({ active: 'កំពុងអនុវត្ត', expired: 'ផុតកំណត់', cancelled: 'លុបចោល' })
@@ -265,13 +276,11 @@ export const configs = {
     ],
     filters: [
       { key: 'direction', label: 'កើន/ថយ', type: 'select', width: '110px', options: [{ value: 'in', label: 'កើន' }, { value: 'out', label: 'ថយ' }] },
+      { key: 'reason', label: 'មូលហេតុ', type: 'select', width: '190px', options: MOVEMENT_REASONS },
       { key: 'unit_id', label: 'អង្គភាព', type: 'unit' }, ...dateRange],
     fields: [soldierField,
       { key: 'direction', label: 'កើន/ថយ', type: 'select', required: true, span: 12, options: [{ value: 'in', label: 'កើន' }, { value: 'out', label: 'ថយ' }] },
-      { key: 'reason', label: 'មូលហេតុ', type: 'select', required: true, span: 12, options: [
-        { value: 'recruit', label: 'ចូលបម្រើថ្មី' }, { value: 'reinstate', label: 'ចូលបម្រើវិញ' },
-        { value: 'transfer_in', label: 'ផ្លាស់មកពីអង្គភាពផ្សេង' }, { value: 'transfer_out', label: 'ផ្លាស់ទៅអង្គភាពផ្សេង' },
-        { value: 'other', label: 'ផ្សេងៗ' }] },
+      { key: 'reason', label: 'មូលហេតុ', type: 'select', required: true, span: 12, options: MOVEMENT_REASONS },
       { key: 'unit_id', label: 'អង្គភាព', type: 'unit', span: 12 },
       { key: 'movement_date', label: 'កាលបរិច្ឆេទ', type: 'date', required: true, span: 12 },
       { key: 'note', label: 'កំណត់សម្គាល់', type: 'textarea', rows: 2 }],

@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.models import Category2Record, Lookup, RetirementRecord, SeparationRecord, Soldier, SoldierHistory, StrengthMovement
 
-
 MILITARY_ID_DIGITS = 6  # អត្តលេខ is shown with 6 digits: 652 -> 000652
 KH_DIGITS = str.maketrans("០១២៣៤៥៦៧៨៩", "0123456789")
 
@@ -57,6 +56,34 @@ def years_ago(years: int) -> date:
         return t.replace(year=t.year - years)
     except ValueError:
         return t.replace(year=t.year - years, day=28)
+
+
+NAME_SPACES = re.compile(r"[\s\u200b\u200c\u200d\ufeff]+")
+
+
+def name_key(name: str | None) -> str:
+    """A name as compared for possible duplicates: no spaces (nor zero-width ones, common in Khmer text), lower case."""
+    return NAME_SPACES.sub("", name or "").lower()
+
+
+def possible_duplicates(db: Session, people: list[tuple[str | None, date | None]],
+                        exclude_ids=()) -> dict[tuple[str, date], list[Soldier]]:
+    """{(name_key, date of birth): soldiers already in the system with that name and birth date} for the people
+    given (a person without a name or a birth date is not compared). Deleted soldiers are not counted."""
+    wanted = {(name_key(n), d) for n, d in people if name_key(n) and d}
+    if not wanted:
+        return {}
+    out: dict[tuple[str, date], list[Soldier]] = {}
+    dobs = sorted({d for _, d in wanted})
+    for i in range(0, len(dobs), 1000):
+        stmt = select(Soldier).where(Soldier.date_of_birth.in_(dobs[i:i + 1000]), Soldier.deleted_at.is_(None))
+        if exclude_ids:
+            stmt = stmt.where(Soldier.id.not_in(list(exclude_ids)))
+        for s in db.scalars(stmt):
+            key = (name_key(s.name_kh), s.date_of_birth)
+            if key in wanted:
+                out.setdefault(key, []).append(s)
+    return out
 
 
 def age(dob: date | None) -> int | None:

@@ -19,31 +19,41 @@ from app.models import (
     RetirementRecord,
     SeparationRecord,
     Soldier,
+    SoldierHistory,
     StrengthMovement,
     TrainingCourse,
     TrainingParticipant,
+    Unit,
     User,
 )
 from app.schemas import (
+    IN_REASONS,
+    OUT_REASONS,
     AwardIn,
     Category2In,
     DisciplineIn,
     MilitaryCardIn,
+    RankPositionCheckIn,
+    RankPositionIn,
     RetirementBulkCheckIn,
     RetirementBulkIn,
     RetirementIn,
     SeparationIn,
+    StrengthBulkCheckIn,
+    StrengthBulkIn,
     StrengthIn,
     TrainingCourseIn,
 )
 from app.services.cards import CARD_REASONS, CARD_STATUS, OUTDATED, card_status, outdated_card_clause, outdated_reasons
-from app.services.common import audit, check_unit_in_scope, scope_unit_ids, to_dict
+from app.services.common import audit, check_unit_in_scope, scope_unit_ids, to_dict, unit_subtree_ids
 from app.services.soldier import (
+    add_history,
     add_movement,
     format_military_id,
     is_inactive,
     is_separated,
     status_id_by_code,
+    unit_chain,
 )
 
 router = APIRouter()
@@ -261,12 +271,24 @@ def _leave_after_save(table: str, status_code_fn, reason_fn):
     return hook
 
 
+RETIRE_MOVE_NOTE = "ផ្លាស់អង្គភាព ពេលចូលនិវត្តន៍"
+
+
 def _leave_after_delete(table: str):
     def hook(db: Session, user: User, obj):
         s = db.get(Soldier, obj.soldier_id)
         s.status_id = obj.previous_status_id or status_id_by_code(db, "active")
         db.execute(delete(StrengthMovement).where(StrengthMovement.source_table == table,
                                                   StrengthMovement.source_id == obj.id))
+        # the move to another unit made on leaving (ផ្លាស់អង្គភាព ពេលចូលនិវត្តន៍) goes with the record: the soldier is
+        # back in the unit they left, unless their unit changed again since (the move is then their latest history)
+        last = db.scalar(select(SoldierHistory).where(SoldierHistory.soldier_id == s.id)
+                         .order_by(SoldierHistory.id.desc()).limit(1))
+        if obj.previous_unit_id and last and last.note == RETIRE_MOVE_NOTE \
+                and (last.old_unit_id, last.new_unit_id) == (obj.previous_unit_id, s.current_unit_id):
+            s.current_unit_id = obj.previous_unit_id
+            s.unit_transfer_date = getattr(obj, "previous_unit_date", None) or s.unit_transfer_date
+            db.delete(last)
 
     return hook
 
@@ -350,9 +372,9 @@ def create_bulk_retirement(payload: RetirementBulkIn, request: Request, db: Sess
         s = obj.soldier
         if payload.unit_id and payload.unit_id != s.current_unit_id:
             old = (s.current_rank_id, s.current_position_id, s.current_unit_id)
-            old_unit_date = s.unit_transfer_date
+            old_unit_date = obj.previous_unit_date = s.unit_transfer_date
             s.current_unit_id, s.unit_transfer_date, s.updated_by = payload.unit_id, payload.effective_date, user.id
-            record_edit(db, s, old, old_unit_date, "ផ្លាស់អង្គភាព ពេលចូលនិវត្តន៍")
+            record_edit(db, s, old, old_unit_date, RETIRE_MOVE_NOTE)
         audit(db, user, "create", obj, request=request)
         created.append(obj)
     db.commit()
@@ -454,6 +476,8 @@ MOVEMENT_REASONS = {
     "recruit": "ចូលបម្រើថ្មី", "transfer_in": "ផ្លាស់មកពីអង្គភាពផ្សេង", "reinstate": "ចូលបម្រើវិញ",
     "transfer_out": "ផ្លាស់ទៅអង្គភាពផ្សេង", "retire": "សោធននិវត្តន៍", "category2": "យោធិនប្រភេទ២",
     "separate": "ចេញពីជួរ", "other": "ផ្សេងៗ",
+    # ការផ្លាស់ប្ដូរស្ថាប័នកងឯកភាព: between units of the same ស្ថាប័នកងឯកភាព / joining from outside it
+    "internal": "ផ្លាស់ប្ដូរផ្ទៃក្នុង", "outside_in": "កើនក្រៅស្ថាប័នកងឯកភាព",
 }
 
 
@@ -493,3 +517,315 @@ router.include_router(crud_router(
     serialize=movement_out, base_query=_movement_scope, before_save=_movement_before,
     before_delete=_movement_not_auto, tags=["strength"],
 ))
+
+
+# ---------------- ការផ្លាស់ប្ដូរស្ថាប័នកងឯកភាព: many soldiers at once ----------------
+# កើន (in): every soldier entered joins the chosen ស្ថាប័នកងឯកភាព/អង្គភាព — the soldier's unit changes, with a history
+# row and the strength movements (out of the old unit, into the new one). ថយ (out): a movement out of the chosen
+# ស្ថាប័នកងឯកភាព is recorded for each soldier (the profile does not change; to move a soldier, use កើន at the new one).
+
+
+def _institution_id(db: Session, unit_id: int | None) -> int | None:
+    chain = unit_chain(db.get(Unit, unit_id)) if unit_id else []
+    return chain[0].id if chain else None
+
+
+def _unit_name(db: Session, unit_id: int | None) -> str | None:
+    u = db.get(Unit, unit_id) if unit_id else None
+    return u.name_kh if u else None
+
+
+def _bulk_target(db: Session, user: User, direction: str, reason: str | None, unit_id: int | None) -> None:
+    if reason is not None and reason not in (IN_REASONS if direction == "in" else OUT_REASONS):
+        raise HTTPException(400, "មូលហេតុមិនត្រឹមត្រូវ")
+    if unit_id is not None:
+        u = db.get(Unit, unit_id)
+        if not u or not u.active:
+            raise HTTPException(400, "ស្ថាប័នកងឯកភាព/អង្គភាពមិនត្រឹមត្រូវ")
+        check_unit_in_scope(db, user, unit_id)
+
+
+def _bulk_problems(db: Session, user: User, soldiers: list[Soldier], direction: str, reason: str | None,
+                   unit_id: int | None) -> list[tuple[list[str], list[str]]]:
+    """(errors, warnings) per soldier. Errors stop saving; warnings (staffing table...) are only shown."""
+    from app.api.v1.decisions import staffing_issues  # decisions -> ... -> records
+
+    scope = scope_unit_ids(db, user)
+    target = _institution_id(db, unit_id)
+    inside = set(unit_subtree_ids(db, unit_id)) if unit_id else set()
+    out, moving = [], []
+    for s in soldiers:
+        errors, warnings = [], []
+        if scope is not None and s.current_unit_id not in scope:
+            errors.append("នៅក្រៅសិទ្ធិរបស់អ្នក")
+        elif is_inactive(db, s):
+            errors.append("បានចូលនិវត្តន៍ ឬចេញពីជួររួចហើយ")
+        elif unit_id and reason:
+            current = _institution_id(db, s.current_unit_id)
+            if direction == "out":
+                if s.current_unit_id not in inside:
+                    errors.append(f"មិនស្ថិតនៅក្នុង {_unit_name(db, unit_id)} (បច្ចុប្បន្ននៅ {s.unit.name_kh if s.unit else '-'})")
+            elif s.current_unit_id == unit_id:
+                errors.append("ស្ថិតនៅអង្គភាពនេះរួចហើយ")
+            elif reason == "internal" and current != target:
+                errors.append(f"ផ្លាស់ប្ដូរផ្ទៃក្នុង ត្រូវតែនៅក្នុងស្ថាប័នកងឯកភាពតែមួយ (បច្ចុប្បន្ននៅ {_unit_name(db, current) or '-'})")
+            elif reason == "outside_in" and current and current == target:
+                errors.append("នៅក្នុងស្ថាប័នកងឯកភាពនេះរួចហើយ — សូមជ្រើស «ផ្លាស់ប្ដូរផ្ទៃក្នុង»")
+            elif reason == "transfer_in" and current and current == target:
+                warnings.append("ផ្លាស់ក្នុងស្ថាប័នកងឯកភាពតែមួយ — គួរជ្រើស «ផ្លាស់ប្ដូរផ្ទៃក្នុង»")
+        out.append((errors, warnings))
+        if direction == "in" and unit_id and not errors:
+            moving.append((len(out) - 1, s))
+    # the staffing table (ក្របខណ្ឌ) of the new unit, all the soldiers of this entry counted together
+    label = "ក្របខណ្ឌ"
+    changes = [(s, None, None, unit_id, label) for _, s in moving]
+    for (n, _), problems in zip(moving, staffing_issues(db, "transfer", changes), strict=True):
+        out[n][1].extend(p.removeprefix(f"{label}: ") for p in problems)
+    return out
+
+
+@router.post("/strength-movements/bulk/check", tags=["strength"])
+def check_bulk_movement(payload: StrengthBulkCheckIn, db: Session = Depends(get_db),
+                        user: User = Depends(require("strength", "create"))):
+    """The pasted military IDs, each with its soldier and what saving would do or refuse (nothing is written)."""
+    _bulk_target(db, user, payload.direction, payload.reason, payload.unit_id)
+    mids = list(dict.fromkeys(format_military_id(x) for x in re.split(r"[\s,;]+", payload.military_ids) if x))[:1000]
+    found = {s.military_id: s for s in db.scalars(select(Soldier).where(
+        Soldier.military_id.in_(mids), Soldier.deleted_at.is_(None)))} if mids else {}
+    soldiers = [found[m] for m in mids if m in found]
+    scope = scope_unit_ids(db, user)
+    checked = dict(zip((s.id for s in soldiers),
+                       _bulk_problems(db, user, soldiers, payload.direction, payload.reason, payload.unit_id), strict=True))
+    rows = []
+    for mid in mids:
+        s = found.get(mid)
+        if s is None:
+            rows.append({"military_id": mid, "status": "not_found", "errors": ["រកមិនឃើញអត្តលេខនេះ"], "warnings": []})
+            continue
+        errors, warnings = checked[s.id]
+        if scope is not None and s.current_unit_id not in scope:  # not even the name of a soldier outside one's units
+            rows.append({"military_id": mid, "status": "error", "errors": errors, "warnings": []})
+            continue
+        rows.append({"military_id": mid, "soldier_id": s.id, **soldier_brief(s), "unit_id": s.current_unit_id,
+                     "institution_name": _unit_name(db, _institution_id(db, s.current_unit_id)),
+                     "status": "error" if errors else "warning" if warnings else "ok",
+                     "errors": errors, "warnings": warnings})
+    return rows
+
+
+@router.post("/strength-movements/bulk", status_code=201, tags=["strength"])
+def create_bulk_movement(payload: StrengthBulkIn, request: Request, db: Session = Depends(get_db),
+                         user: User = Depends(require("strength", "create"))):
+    """All or none: refused while any soldier has an error (the check above shows them)."""
+    _bulk_target(db, user, payload.direction, payload.reason, payload.unit_id)
+    if payload.movement_date > date.today():
+        raise HTTPException(400, "កាលបរិច្ឆេទមិនអាចនៅថ្ងៃអនាគត")
+    soldiers = []
+    for sid in dict.fromkeys(payload.soldier_ids):
+        s = db.get(Soldier, sid)
+        if not s or s.deleted_at:
+            raise HTTPException(400, f"រកមិនឃើញយោធិន id={sid}")
+        soldiers.append(s)
+    problems = _bulk_problems(db, user, soldiers, payload.direction, payload.reason, payload.unit_id)
+    refused = [f"{s.military_id} {s.name_kh}: {'; '.join(e)}" for s, (e, _) in zip(soldiers, problems, strict=True) if e]
+    if refused:
+        raise HTTPException(400, "មិនអាចរក្សាទុកបាន៖\n" + "\n".join(refused))
+    when, reason, note = payload.movement_date, payload.reason, payload.note
+    for s in soldiers:
+        if payload.direction == "out":  # a record only: editable on the page like any manual movement
+            m = StrengthMovement(soldier_id=s.id, unit_id=s.current_unit_id, direction="out", reason=reason,
+                                 movement_date=when, note=note)
+            db.add(m)
+            db.flush()
+            audit(db, user, "create", m, request=request)
+            continue
+        old = s.current_unit_id
+        if old:
+            add_movement(db, s.id, old, "out", "internal" if reason == "internal" else "transfer_out", when,
+                         "soldiers", s.id, note=note)
+        add_movement(db, s.id, payload.unit_id, "in", reason, when, "soldiers", s.id, note=note)
+        add_history(db, s, "transfer", when, old_unit=old, new_unit=payload.unit_id,
+                    note=" — ".join(x for x in (MOVEMENT_REASONS[reason], note) if x))
+        s.from_unit_text = s.unit.name_kh if s.unit else s.from_unit_text
+        s.current_unit_id, s.unit_transfer_date, s.updated_by = payload.unit_id, when, user.id
+        audit(db, user, "update", s, request=request)
+    db.commit()
+    return {"saved": len(soldiers)}
+
+
+# ---------------- Update ស័ក្តិ និងមុខតំណែង: many soldiers at once ----------------
+# The rank, position and/or unit of the soldiers entered (and the date of each) are set as given, from an incoming
+# document (ឯកសារចូល), outside of the decision workflow: a history row "update" per soldier whose rank, position or
+# unit changes; a unit change also moves the soldier between unit strengths (out of the old unit, into the new one).
+# Each soldier's values start as the soldier's own; a value left empty keeps the soldier's.
+
+RP_FIELDS = ("rank_id", "rank_date", "position_id", "position_date", "unit_id", "unit_date")
+
+
+def _rp_current(s: Soldier) -> dict:
+    return {"rank_id": s.current_rank_id, "rank_date": s.rank_date, "position_id": s.current_position_id,
+            "position_date": s.position_date, "unit_id": s.current_unit_id, "unit_date": s.unit_transfer_date}
+
+
+def _rp_values(s: Soldier, values) -> dict:
+    """The values the soldier would have (empty = the soldier's own)."""
+    current = _rp_current(s)
+    return {k: getattr(values, k, None) or current[k] for k in RP_FIELDS}
+
+
+def _rp_changes(s: Soldier, v: dict) -> list[str]:
+    current = _rp_current(s)
+    return [k for k in RP_FIELDS if v[k] != current[k]]
+
+
+def _rp_problems(db: Session, user: User, pairs: list[tuple[Soldier, dict]]) -> list[tuple[list[str], list[str]]]:
+    """(errors, warnings) per soldier. Errors stop saving; warnings (a lower rank, the staffing table...) are shown."""
+    from app.api.v1.decisions import IN_PROGRESS, staffing_issues  # decisions -> ... -> records
+    from app.models import Decision, DecisionItem, Position, Rank
+
+    scope = scope_unit_ids(db, user)
+    today = date.today()
+    out, changing = [], []
+    for s, v in pairs:
+        errors, warnings = [], []
+        rank = db.get(Rank, v["rank_id"]) if v["rank_id"] else None
+        position = db.get(Position, v["position_id"]) if v["position_id"] else None
+        unit = db.get(Unit, v["unit_id"]) if v["unit_id"] else None
+        moves = v["unit_id"] != s.current_unit_id
+        if scope is not None and s.current_unit_id not in scope:
+            errors.append("នៅក្រៅសិទ្ធិរបស់អ្នក")
+        elif is_inactive(db, s):
+            errors.append("បានចូលនិវត្តន៍ ឬចេញពីជួររួចហើយ")
+        else:
+            if v["rank_id"] and not rank:
+                errors.append("ឋានន្តរស័ក្តិមិនត្រឹមត្រូវ")
+            if v["position_id"] and (not position or (not position.active and v["position_id"] != s.current_position_id)):
+                errors.append("មុខតំណែងមិនត្រឹមត្រូវ")
+            if moves and (not unit or not unit.active):
+                errors.append("អង្គភាពមិនត្រឹមត្រូវ")
+            elif moves and scope is not None and v["unit_id"] not in scope:
+                errors.append("អង្គភាពថ្មីនៅក្រៅសិទ្ធិរបស់អ្នក")
+            for k, label in (("rank_date", "ថ្ងៃឡើងស័ក្តិ"), ("position_date", "ថ្ងៃមុខតំណែង"),
+                             ("unit_date", "ថ្ងៃផ្លាស់អង្គភាព")):
+                if v[k] and v[k] > today:
+                    errors.append(f"{label} មិនអាចនៅថ្ងៃអនាគត")
+                elif v[k] and s.date_of_birth and v[k] <= s.date_of_birth:
+                    errors.append(f"{label} មុនថ្ងៃកំណើត")
+                elif v[k] and s.enlistment_date and v[k] < s.enlistment_date:
+                    warnings.append(f"{label} មុនថ្ងៃចូលបម្រើទ័ព")
+            if rank and s.rank and v["rank_id"] != s.current_rank_id and rank.sort_order < s.rank.sort_order:
+                warnings.append(f"ឋានន្តរស័ក្តិទាបជាងបច្ចុប្បន្ន ({s.rank.name_kh})")
+            if v["rank_id"] != s.current_rank_id and not v["rank_date"]:
+                warnings.append("ខ្វះថ្ងៃឡើងស័ក្តិ")
+            if v["position_id"] != s.current_position_id and not v["position_date"]:
+                warnings.append("ខ្វះថ្ងៃមុខតំណែង")
+            if moves and v["unit_date"] == s.unit_transfer_date:
+                warnings.append("ខ្វះថ្ងៃផ្លាស់អង្គភាព (នឹងប្រើថ្ងៃនេះ)")
+            if db.scalar(select(Decision.id).join(DecisionItem).where(
+                    DecisionItem.soldier_id == s.id, Decision.deleted_at.is_(None),
+                    or_(Decision.status.in_(("draft", *IN_PROGRESS)),
+                        and_(Decision.status == "approved", Decision.published_at.is_(None)))).limit(1)):
+                warnings.append("មាននៅក្នុងសេចក្ដីសម្រេចដែលកំពុងដំណើរការ")
+        out.append((errors, warnings))
+        new_rank = v["rank_id"] if v["rank_id"] != s.current_rank_id else None
+        new_position = v["position_id"] if v["position_id"] != s.current_position_id else None
+        new_unit = v["unit_id"] if moves else None
+        if not errors and (new_rank or new_position or new_unit):
+            changing.append((len(out) - 1, s, new_rank, new_position, new_unit))
+    # the staffing table (ក្របខណ្ឌ) and rank quotas, all the soldiers of this entry counted together
+    label = "ក្របខណ្ឌ"
+    changes = [(s, r, p, u, label) for _, s, r, p, u in changing]
+    for (n, *_), problems in zip(changing, staffing_issues(db, "transfer", changes), strict=True):
+        out[n][1].extend(p.removeprefix(f"{label}: ") for p in problems)
+    return out
+
+
+@router.post("/rank-position-updates/check", tags=["soldiers"])
+def check_rank_position(payload: RankPositionCheckIn, db: Session = Depends(get_db),
+                        user: User = Depends(require("rank_position_update", "update"))):
+    """The soldiers listed and the military IDs added, each with its values and what saving would do or refuse."""
+    pairs, seen, rows = [], set(), []
+    for item in payload.items:
+        s = db.get(Soldier, item.soldier_id)
+        if s and not s.deleted_at and s.id not in seen:
+            seen.add(s.id)
+            pairs.append((s, _rp_values(s, item)))
+    mids = list(dict.fromkeys(format_military_id(x) for x in re.split(r"[\s,;]+", payload.military_ids or "") if x))[:1000]
+    found = {s.military_id: s for s in db.scalars(select(Soldier).where(
+        Soldier.military_id.in_(mids), Soldier.deleted_at.is_(None)))} if mids else {}
+    missing = []
+    for mid in mids:
+        s = found.get(mid)
+        if s is None:
+            missing.append({"military_id": mid, "status": "not_found", "errors": ["រកមិនឃើញអត្តលេខនេះ"], "warnings": []})
+        elif s.id not in seen:
+            seen.add(s.id)
+            pairs.append((s, _rp_values(s, payload.defaults)))
+    scope = scope_unit_ids(db, user)
+    for (s, v), (errors, warnings) in zip(pairs, _rp_problems(db, user, pairs), strict=True):
+        if scope is not None and s.current_unit_id not in scope:  # not even the name of a soldier outside one's units
+            rows.append({"military_id": s.military_id, "status": "error", "errors": errors, "warnings": []})
+            continue
+        changed = _rp_changes(s, v)
+        status = "error" if errors else "unchanged" if not changed else "warning" if warnings else "ok"
+        rows.append({"military_id": s.military_id, "soldier_id": s.id, **soldier_brief(s),
+                     "current": _rp_current(s), "current_unit_name": _unit_name(db, s.current_unit_id),
+                     **v, "changed": changed, "status": status, "errors": errors, "warnings": warnings})
+    return rows + missing
+
+
+@router.post("/rank-position-updates", status_code=201, tags=["soldiers"])
+def save_rank_position(payload: RankPositionIn, request: Request, db: Session = Depends(get_db),
+                       user: User = Depends(require("rank_position_update", "update"))):
+    """All or none: refused while any soldier has an error (the check above shows them). Soldiers whose values
+    are their own already are left as they are."""
+    from app.models import DocumentIncoming
+
+    doc = None
+    if payload.incoming_document_id:
+        doc = db.get(DocumentIncoming, payload.incoming_document_id)
+        if not doc or doc.deleted_at:
+            raise HTTPException(400, "រកមិនឃើញឯកសារចូល")
+    pairs = []
+    for item in {i.soldier_id: i for i in payload.items}.values():
+        s = db.get(Soldier, item.soldier_id)
+        if not s or s.deleted_at:
+            raise HTTPException(400, f"រកមិនឃើញយោធិន id={item.soldier_id}")
+        pairs.append((s, _rp_values(s, item)))
+    problems = _rp_problems(db, user, pairs)
+    refused = [f"{s.military_id} {s.name_kh}: {'; '.join(e)}" for (s, _), (e, _) in zip(pairs, problems, strict=True) if e]
+    if refused:
+        raise HTTPException(400, "មិនអាចរក្សាទុកបាន៖\n" + "\n".join(refused))
+    note = " — ".join(x for x in ("Update ស័ក្តិ និងមុខតំណែង",
+                                  f"ឯកសារចូល លេខ {doc.incoming_no} ({doc.doc_date:%d/%m/%Y})" if doc else None,
+                                  payload.note) if x)
+    saved = 0
+    for s, v in pairs:
+        if not _rp_changes(s, v):
+            continue
+        before = to_dict(s)
+        old_rank, old_position, old_unit = s.current_rank_id, s.current_position_id, s.current_unit_id
+        moves = v["unit_id"] != old_unit
+        unit_date = (v["unit_date"] if v["unit_date"] != s.unit_transfer_date else None) or date.today() if moves \
+            else v["unit_date"]
+        if (v["rank_id"], v["position_id"], v["unit_id"]) != (old_rank, old_position, old_unit):
+            when = (v["rank_date"] if v["rank_id"] != old_rank else
+                    v["position_date"] if v["position_id"] != old_position else unit_date) or date.today()
+            add_history(db, s, "update", when, old_rank=old_rank, new_rank=v["rank_id"], old_position=old_position,
+                        new_position=v["position_id"], old_unit=old_unit, new_unit=v["unit_id"], note=note[:500])
+        if moves:  # out of the old unit, into the new one (within one ស្ថាប័នកងឯកភាព: ផ្លាស់ប្ដូរផ្ទៃក្នុង)
+            internal = old_unit and _institution_id(db, old_unit) == _institution_id(db, v["unit_id"])
+            if old_unit:
+                add_movement(db, s.id, old_unit, "out", "internal" if internal else "transfer_out", unit_date,
+                             "soldiers", s.id, note=note[:500])
+            add_movement(db, s.id, v["unit_id"], "in", "internal" if internal else "transfer_in" if old_unit else "recruit",
+                         unit_date, "soldiers", s.id, note=note[:500])
+            s.from_unit_text = s.unit.name_kh if s.unit else s.from_unit_text
+        s.current_rank_id, s.rank_date = v["rank_id"], v["rank_date"]
+        s.current_position_id, s.position_date = v["position_id"], v["position_date"]
+        s.current_unit_id, s.unit_transfer_date = v["unit_id"], unit_date
+        s.updated_by = user.id
+        audit(db, user, "update", s, before=before, request=request)
+        saved += 1
+    db.commit()
+    return {"saved": saved}

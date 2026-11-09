@@ -86,6 +86,8 @@ class RetirementRecord(AuditMixin, SoftDeleteMixin, Base):
     # soldier status/unit before this record, restored if the record is deleted
     previous_status_id: Mapped[int | None] = mapped_column(ForeignKey("lookups.id"))
     previous_unit_id: Mapped[int | None] = mapped_column(ForeignKey("units.id"))
+    # the unit date before "ផ្លាស់អង្គភាព ពេលចូលនិវត្តន៍" moved the soldier (put back if the record is deleted)
+    previous_unit_date: Mapped[date | None] = mapped_column(Date)
 
     soldier = relationship("Soldier", lazy="joined")
 

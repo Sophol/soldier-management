@@ -34,9 +34,18 @@ onBeforeUnmount(() => clearInterval(timer))
 const ACTIVITY_TYPE = { create: 'success', approve: 'success', submit: 'primary', update: 'warning', return: 'warning',
   delete: 'danger', reject: 'danger', cancel: 'danger', login: 'info' }
 
+// the figures are counted in the background every few minutes (system setting); "refresh" counts them now
+const refreshing = ref(false)
+async function loadSummary(refresh = false) {
+  data.value = (await http.get('/dashboard/summary', { params: refresh ? { refresh: true } : {}, timeout: 3 * 60 * 1000 })).data
+}
+async function refreshNow() {
+  refreshing.value = true
+  try { await loadSummary(true) } finally { refreshing.value = false }
+}
 onMounted(async () => {
   try {
-    data.value = (await http.get('/dashboard/summary')).data
+    await loadSummary()
   } finally {
     loading.value = false
   }
@@ -128,7 +137,13 @@ const pending = computed(() => {
 
 <template>
   <div v-loading="loading" class="page">
-    <div class="page-head"><h2>ផ្ទាំងគ្រប់គ្រង</h2></div>
+    <div class="page-head">
+      <h2>ផ្ទាំងគ្រប់គ្រង</h2>
+      <div v-if="data?.computed_at" class="head-actions">
+        <span class="muted">ទិន្នន័យគិតត្រឹម {{ fmtDateTime(data.computed_at) }}</span>
+        <el-button icon="Refresh" size="small" :loading="refreshing" @click="refreshNow">គណនាឡើងវិញ</el-button>
+      </div>
+    </div>
     <template v-if="data">
       <el-row :gutter="14">
         <el-col v-for="c in cards" :key="c.label" :xs="24" :sm="12" :lg="6">

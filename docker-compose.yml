@@ -27,6 +27,26 @@ services:
       - db
     restart: unless-stopped
 
+  # daily copy of the database and the uploaded files into ./backups (backend/scripts/backup.sh);
+  # copy that folder to another machine or disk regularly: a backup on the same disk does not survive the disk
+  backup:
+    image: mysql:8.4
+    entrypoint: ["bash", "/backup.sh"]
+    environment:
+      MYSQL_HOST: db
+      MYSQL_DATABASE: soldier-management
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      BACKUP_TIME: ${BACKUP_TIME:-01:00}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+    volumes:
+      - ./backend/scripts/backup.sh:/backup.sh:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+      - storage:/storage:ro
+    depends_on:
+      - db
+    restart: unless-stopped
+
   web:
     build: ./frontend
     ports:

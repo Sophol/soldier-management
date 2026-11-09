@@ -38,13 +38,15 @@ async function send(dryRun) {
 
 async function save() {
   const r = result.value
-  await ElMessageBox.confirm(`រក្សាទុកយោធិនថ្មី ${r.create} នាក់ និងធ្វើបច្ចុប្បន្នភាព ${r.update} នាក់? ជួរដែលមានកំហុស ${r.error} នឹងមិនត្រូវបាននាំចូលទេ។`,
+  const warn = r.warning ? ` មាន ${r.warning} ជួរ ដែលប្រហែលជាយោធិនស្ទួន (ឈ្មោះ និងថ្ងៃកំណើតដូចគ្នា) — ជួរទាំងនោះនឹងត្រូវបាននាំចូលដែរ។` : ''
+  await ElMessageBox.confirm(`រក្សាទុកយោធិនថ្មី ${r.create} នាក់ និងធ្វើបច្ចុប្បន្នភាព ${r.update} នាក់? ជួរដែលមានកំហុស ${r.error} នឹងមិនត្រូវបាននាំចូលទេ។${warn}`,
     'នាំចូល', { type: 'warning', confirmButtonText: 'នាំចូល', cancelButtonText: 'បោះបង់' })
   await send(false)
   ElMessage.success(`បាននាំចូល៖ ថ្មី ${result.value.create}, បច្ចុប្បន្នភាព ${result.value.update}`)
 }
 
-const rows = computed(() => (result.value?.rows || []).filter((r) => show.value === 'all' || r.action === show.value))
+const rows = computed(() => (result.value?.rows || []).filter((r) => show.value === 'all' || r.action === show.value
+  || (show.value === 'warning' && r.warnings?.length)))
 </script>
 
 <template>
@@ -84,6 +86,7 @@ const rows = computed(() => (result.value?.rows || []).filter((r) => show.value 
         <el-radio-button value="create">ថ្មី {{ num(result.create) }}</el-radio-button>
         <el-radio-button value="update">បច្ចុប្បន្នភាព {{ num(result.update) }}</el-radio-button>
         <el-radio-button value="error">កំហុស {{ num(result.error) }}</el-radio-button>
+        <el-radio-button v-if="result.warning" value="warning">ប្រហែលស្ទួន {{ num(result.warning) }}</el-radio-button>
       </el-radio-group>
       <el-table :data="rows" border size="small" max-height="520" empty-text="គ្មាន">
         <el-table-column label="ជួរ" width="70"><template #default="{ row }">{{ num(row.row) }}</template></el-table-column>
@@ -97,8 +100,11 @@ const rows = computed(() => (result.value?.rows || []).filter((r) => show.value 
         <el-table-column label="លទ្ធផល" width="150">
           <template #default="{ row }"><el-tag :type="ACTION[row.action][1]" size="small">{{ ACTION[row.action][0] }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="កំហុស" min-width="320">
-          <template #default="{ row }"><div v-for="e in row.errors" :key="e" class="err">{{ e }}</div></template>
+        <el-table-column label="កំហុស / ការព្រមាន" min-width="320">
+          <template #default="{ row }">
+            <div v-for="e in row.errors" :key="e" class="err">{{ e }}</div>
+            <div v-for="w in row.warnings" :key="`w-${w}`" class="warn">{{ w }}</div>
+          </template>
         </el-table-column>
       </el-table>
     </el-card>
@@ -109,4 +115,5 @@ const rows = computed(() => (result.value?.rows || []).filter((r) => show.value 
 .drop { margin-top: 16px; }
 .actions { display: flex; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .err { color: var(--el-color-danger); font-size: 12px; }
+.warn { color: var(--el-color-warning-dark-2); font-size: 12px; }
 </style>

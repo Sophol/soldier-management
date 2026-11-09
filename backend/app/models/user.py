@@ -71,7 +71,8 @@ class AuditLog(Base):
     ip: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
-    user = relationship("User", lazy="joined")
+    # loaded in a second query: joined to the users, MySQL sorted the whole log before taking the LIMIT
+    user = relationship("User", lazy="selectin")
 
 
 class Setting(Base):
@@ -93,3 +94,28 @@ class SavedFilter(TimestampMixin, Base):
     shared: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user = relationship("User", lazy="joined")
+
+
+class DashboardSnapshot(Base):
+    """The dashboard's figures for one user scope (all units, or a set of units), counted in the background:
+    opening the dashboard reads them instead of counting the whole strength."""
+    __tablename__ = "dashboard_snapshots"
+    scope_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    computed_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ExportJob(Base):
+    """A large Excel file made in the background (the request would time out), downloaded by its owner when ready."""
+    __tablename__ = "export_jobs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(50))
+    title: Mapped[str] = mapped_column(String(200))
+    filename: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued / running / done / failed
+    file_path: Mapped[str | None] = mapped_column(String(255))
+    size: Mapped[int | None] = mapped_column(BigInteger)
+    error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
