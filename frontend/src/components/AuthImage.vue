@@ -23,5 +23,5 @@ onBeforeUnmount(() => url.value && URL.revokeObjectURL(url.value))
 </template>
 
 <style scoped>
-.photo-placeholder { display: flex; align-items: center; justify-content: center; background: #eef1f4; color: #9aa4ae; width: 100%; height: 100%; }
+.photo-placeholder { display: flex; align-items: center; justify-content: center; background: var(--el-fill-color); color: var(--el-text-color-placeholder); width: 100%; height: 100%; }
 </style>

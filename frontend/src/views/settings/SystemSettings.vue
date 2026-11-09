@@ -90,5 +90,5 @@ async function save() {
 
 <style scoped>
 .logo-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
-.logo { width: 72px; height: 72px; object-fit: contain; border: 1px solid #e3e8ec; border-radius: 8px; padding: 4px; }
+.logo { width: 72px; height: 72px; object-fit: contain; border: 1px solid var(--el-border-color-light); border-radius: 8px; padding: 4px; }
 </style>

@@ -79,6 +79,8 @@ export default {
     profile: 'ព័ត៌មានគណនី',
     language: 'ភាសា',
     khmerDigits: 'លេខខ្មែរ',
+    darkMode: 'ផ្ទៃងងឹត (Dark mode)',
+    lightMode: 'ផ្ទៃភ្លឺ (Light mode)',
     noData: 'គ្មានទិន្នន័យ',
     attachments: 'ឯកសារភ្ជាប់',
     upload: 'ផ្ទុកឯកសារ',

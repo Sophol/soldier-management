@@ -158,6 +158,6 @@ onMounted(async () => {
 <style scoped>
 .title { text-align: center; color: var(--brand); margin: 0 0 4px; }
 .center { text-align: center; margin: 0 0 12px; }
-.totals { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 16px; background: #f6f8f9; padding: 8px 12px; border-radius: 6px; }
+.totals { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 16px; background: var(--el-fill-color-light); padding: 8px 12px; border-radius: 6px; }
 .bold { font-weight: 600; }
 </style>

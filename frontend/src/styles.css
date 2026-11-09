@@ -16,6 +16,21 @@
   --el-font-size-base: 15px;
 }
 
+/* dark mode (utils/theme.js): Element Plus's dark variables, with the brand green mixed for a dark background */
+html.dark {
+  --bg: #0f1311;
+  --text: #e2e8e4;
+  --muted: #9aa6ae;
+  --brand: #8fcbb0;
+  --el-color-primary: #3d8f6f;
+  --el-color-primary-light-3: #316a54;
+  --el-color-primary-light-5: #295241;
+  --el-color-primary-light-7: #20392f;
+  --el-color-primary-light-8: #1c2d26;
+  --el-color-primary-light-9: #18201d;
+  --el-color-primary-dark-2: #64a58c;
+}
+
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; height: 100%; }
 body { font-family: var(--el-font-family); background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.7;
@@ -36,7 +51,7 @@ body { font-family: var(--el-font-family); background: var(--bg); color: var(--t
 .head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .filter-card .el-card__body { padding-bottom: 0; }
 .pager { margin-top: 14px; justify-content: flex-end; }
-.el-table th.el-table__cell { background: #f6f8f9; color: var(--text); font-weight: 600; }
+.el-table th.el-table__cell { background: var(--el-fill-color-light); color: var(--text); font-weight: 600; }
 .el-form-item__label { font-weight: 700; line-height: 1.8; }
 .muted { color: var(--muted); }
 .section-title { font-weight: 700; color: var(--brand); margin: 18px 0 10px; border-left: 4px solid var(--gold); padding-left: 8px; }

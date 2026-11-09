@@ -9,6 +9,7 @@ import VChart from 'vue-echarts'
 import http from '@/api/http'
 import { useAuth } from '@/stores/auth'
 import { fmtDateTime, num } from '@/utils/format'
+import { isDark } from '@/utils/theme'
 
 use([CanvasRenderer, BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent])
 
@@ -51,16 +52,21 @@ onMounted(async () => {
   }
 })
 
+// dark mode: echarts' dark theme (light text) on the card's own background
+const chartTheme = computed(() => (isDark.value ? 'dark' : undefined))
+
 const pie = (obj) => ({
   color: PALETTE,
+  backgroundColor: 'transparent',
   tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
   legend: { bottom: 0, type: 'scroll' },
-  series: [{ type: 'pie', radius: ['45%', '70%'], center: ['50%', '45%'], itemStyle: { borderColor: '#fff', borderWidth: 2 },
+  series: [{ type: 'pie', radius: ['45%', '70%'], center: ['50%', '45%'], itemStyle: { borderColor: isDark.value ? '#1d1e1f' : '#fff', borderWidth: 2 },
     label: { formatter: '{c}' }, data: Object.entries(obj || {}).map(([name, value]) => ({ name, value })) }],
 })
 
 const bar = (obj) => ({
   color: PALETTE,
+  backgroundColor: 'transparent',
   tooltip: { trigger: 'axis' },
   grid: { left: 10, right: 20, top: 10, bottom: 10, containLabel: true },
   xAxis: { type: 'value', minInterval: 1 },
@@ -73,6 +79,7 @@ const movement = computed(() => {
   if (!m) return {}
   return {
     color: ['#24614b', '#b5543c'],
+    backgroundColor: 'transparent',
     tooltip: { trigger: 'axis' },
     legend: { top: 0 },
     grid: { left: 10, right: 20, top: 36, bottom: 10, containLabel: true },
@@ -202,22 +209,22 @@ const pending = computed(() => {
 
       <el-row :gutter="14">
         <el-col :xs="24" :md="8">
-          <el-card shadow="never" header="តាមថ្នាក់ឋានន្តរស័ក្តិ"><v-chart class="chart" :option="pie(data.by_rank_class)" autoresize /></el-card>
+          <el-card shadow="never" header="តាមថ្នាក់ឋានន្តរស័ក្តិ"><v-chart class="chart" :theme="chartTheme" :option="pie(data.by_rank_class)" autoresize /></el-card>
         </el-col>
         <el-col :xs="24" :md="8">
-          <el-card shadow="never" header="តាមភេទ"><v-chart class="chart" :option="pie(data.by_gender)" autoresize /></el-card>
+          <el-card shadow="never" header="តាមភេទ"><v-chart class="chart" :theme="chartTheme" :option="pie(data.by_gender)" autoresize /></el-card>
         </el-col>
         <el-col :xs="24" :md="8">
-          <el-card shadow="never" header="តាមស្ថានភាព"><v-chart class="chart" :option="pie(data.by_status)" autoresize /></el-card>
+          <el-card shadow="never" header="តាមស្ថានភាព"><v-chart class="chart" :theme="chartTheme" :option="pie(data.by_status)" autoresize /></el-card>
         </el-col>
       </el-row>
 
       <el-row :gutter="14">
         <el-col :xs="24" :lg="12">
-          <el-card shadow="never" header="តាមស្ថាប័នកងឯកភាព"><v-chart class="chart" :option="bar(data.by_institution)" autoresize /></el-card>
+          <el-card shadow="never" header="តាមស្ថាប័នកងឯកភាព"><v-chart class="chart" :theme="chartTheme" :option="bar(data.by_institution)" autoresize /></el-card>
         </el-col>
         <el-col :xs="24" :lg="12">
-          <el-card shadow="never" header="កើនថយ ១២ ខែចុងក្រោយ"><v-chart class="chart" :option="movement" autoresize /></el-card>
+          <el-card shadow="never" header="កើនថយ ១២ ខែចុងក្រោយ"><v-chart class="chart" :theme="chartTheme" :option="movement" autoresize /></el-card>
         </el-col>
       </el-row>
     </template>
@@ -233,9 +240,9 @@ const pending = computed(() => {
 .small { font-size: 12px; margin-top: 2px; }
 .alerts { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
 .alert-item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
-.alert-item:hover { background: #f2f6f4; }
+.alert-item:hover { background: var(--el-fill-color-light); }
 .chart { height: 280px; }
 .feed-head { display: flex; justify-content: space-between; align-items: center; }
-.feed-item { display: flex; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid #eef1f3; flex-wrap: wrap; }
+.feed-item { display: flex; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--el-border-color-lighter); flex-wrap: wrap; }
 .feed-time { margin-left: auto; }
 </style>

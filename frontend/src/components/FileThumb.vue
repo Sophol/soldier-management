@@ -50,8 +50,8 @@ onBeforeUnmount(() => owned && URL.revokeObjectURL(owned))
 </template>
 
 <style scoped>
-.thumb { width: 150px; border: 1px solid #e2e7eb; border-radius: 8px; overflow: hidden; background: #fff; }
-.thumb-media { position: relative; height: 110px; display: flex; align-items: center; justify-content: center; background: #f4f6f8; cursor: zoom-in; }
+.thumb { width: 150px; border: 1px solid var(--el-border-color-light); border-radius: 8px; overflow: hidden; background: var(--el-bg-color); }
+.thumb-media { position: relative; height: 110px; display: flex; align-items: center; justify-content: center; background: var(--el-fill-color-light); cursor: zoom-in; }
 .thumb-media img { width: 100%; height: 100%; object-fit: cover; }
 .badge { position: absolute; left: 6px; top: 6px; color: #fff; font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 4px; line-height: 18px; }
 .hover { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.35); color: #fff; opacity: 0; transition: opacity 0.15s; }

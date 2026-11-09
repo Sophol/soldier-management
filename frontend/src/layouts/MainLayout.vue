@@ -9,6 +9,7 @@ import { prefs } from '@/utils/format'
 import { ElNotification } from 'element-plus'
 import http from '@/api/http'
 import BrandLogo from '@/components/BrandLogo.vue'
+import { isDark, toggleTheme } from '@/utils/theme'
 
 const { t, locale } = useI18n()
 const auth = useAuth()
@@ -108,6 +109,9 @@ function onCommand(cmd) {
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <el-tooltip :content="isDark ? t('common.lightMode') : t('common.darkMode')" placement="bottom">
+          <el-button text circle :icon="isDark ? 'Sunny' : 'Moon'" :aria-label="isDark ? t('common.lightMode') : t('common.darkMode')" @click="toggleTheme" />
+        </el-tooltip>
         <el-switch v-model="khmerDigits" :active-text="t('common.khmerDigits')" @change="toggleDigits" />
         <el-select :model-value="locale" style="width: 110px" @change="setLocale">
           <el-option value="km" label="ខ្មែរ" />
@@ -144,7 +148,7 @@ function onCommand(cmd) {
 .el-menu { border-right: none; }
 .bell { margin-right: 4px; }
 .bell-count { margin-left: 8px; }
-.app-header { display: flex; align-items: center; gap: 14px; background: #fff; border-bottom: 1px solid #e4e8eb; height: 56px; }
+.app-header { display: flex; align-items: center; gap: 14px; background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-light); height: 56px; }
 .spacer { flex: 1; }
 .user { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .main { padding: 0; background: var(--bg); }

@@ -3,10 +3,12 @@ import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import * as Icons from '@element-plus/icons-vue'
 import 'element-plus/dist/index.css'
+import 'element-plus/theme-chalk/dark/css-vars.css'
 import '@fontsource/battambang/400.css'
 import '@fontsource/battambang/700.css'
 import '@fontsource/moul/400.css'
 import './styles.css'
+import './utils/theme' // applies the saved light/dark mode before the first paint
 
 import App from './App.vue'
 import router from './router'
