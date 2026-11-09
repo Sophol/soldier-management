@@ -30,6 +30,7 @@ export default {
     appoint: 'តែងតាំងមុខតំណែង',
     transfer: 'ផ្លាស់ប្ដូរមុខតំណែង និងដំឡើងស័ក្តិ',
     promote: 'ដំឡើងឋានន្តរស័ក្តិ',
+    rankPositionUpdate: 'Update ស័ក្តិ និងមុខតំណែង',
     training: 'ការងារបណ្ដុះបណ្ដាល',
     education: 'កម្រិតវប្បធម៌',
     specialtyTraining: 'ជំនាញឯកទេស',

@@ -22,12 +22,12 @@ from app.models.soldier import (
     SoldierHistory,
     SoldierLanguage,
 )
-from app.models.user import AuditLog, Permission, Role, SavedFilter, Setting, User
+from app.models.user import AuditLog, DashboardSnapshot, ExportJob, Permission, Role, SavedFilter, Setting, User
 
 __all__ = [
     "Conscript", "ConscriptMedical", "ConscriptRegistration", "ConscriptService", "DecisionStep",
-    "AuditLog", "AwardRecord", "Category2Record", "Commune", "Country", "Decision", "DecisionItem", "DisciplineRecord",
-    "District", "DocumentFile", "DocumentIncoming", "DocumentOutgoing", "DocumentType", "Lookup", "MilitaryCard",
+    "AuditLog", "AwardRecord", "Category2Record", "Commune", "Country", "DashboardSnapshot", "Decision", "DecisionItem", "DisciplineRecord",
+    "District", "DocumentFile", "ExportJob", "DocumentIncoming", "DocumentOutgoing", "DocumentType", "Lookup", "MilitaryCard",
     "Permission", "Position", "Province", "Rank", "RankClass", "RetirementRecord", "Role",
     "SavedFilter", "SeparationRecord", "Setting", "Soldier", "SoldierAttachment", "SoldierChild", "SoldierEducation",
     "SoldierHistory", "SoldierLanguage", "Specialty", "StrengthMovement", "TrainingCourse",

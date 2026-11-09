@@ -35,7 +35,7 @@ from app.models import (
 )
 from app.models.geo import Commune
 from app.schemas import SoldierIn
-from app.services import soldier_io
+from app.services import exports, soldier_io
 from app.services.cards import soldier_card_clause
 from app.services.common import (
     audit,
@@ -61,6 +61,7 @@ from app.services.soldier import (
     is_inactive,
     is_separated,
     not_separated,
+    possible_duplicates,
     soldier_summary,
     status_id_by_code,
     years_ago,
@@ -404,6 +405,41 @@ def export_soldiers(f: dict = Depends(_filters), db: Session = Depends(get_db),
         raise HTTPException(400, f"ទិន្នន័យច្រើនពេកសម្រាប់ Excel ({total:,} ជួរ; អតិបរមា {soldier_io.MAX_EXPORT_ROWS:,})"
                                  " — សូមចម្រាញ់តាមអង្គភាព ឬលក្ខខណ្ឌផ្សេងទៀត")
     return _xlsx(soldier_io.export(db, in_batches(db, stmt), soldier_summary), "soldiers.xlsx")
+
+
+@router.post("/export-jobs", status_code=202)
+def export_soldiers_later(request: Request, f: dict = Depends(_filters), db: Session = Depends(get_db),
+                          user: User = Depends(require("soldiers", "export"))):
+    """The same file as /export, made in the background (a long list takes minutes): follow /export-jobs/{id}."""
+    total = db.scalar(select(func.count()).select_from(build_query(db, user, **f).order_by(None).subquery()))
+    if total > soldier_io.MAX_EXPORT_ROWS:
+        raise HTTPException(400, f"ទិន្នន័យច្រើនពេកសម្រាប់ Excel ({total:,} ជួរ; អតិបរមា {soldier_io.MAX_EXPORT_ROWS:,})"
+                                 " — សូមចម្រាញ់តាមអង្គភាព ឬលក្ខខណ្ឌផ្សេងទៀត")
+
+    def build(bg: Session, u: User):
+        return soldier_io.export(bg, in_batches(bg, build_query(bg, u, **f)), soldier_summary)
+    audit(db, user, "export", table="soldiers", record_id="*", request=request, before={"rows": total})
+    job = exports.start(db, user, "soldiers", f"បញ្ជីយោធិន ({total:,} នាក់)", "soldiers.xlsx", build)
+    return exports.job_dict(job)
+
+
+@router.get("/duplicates")
+def find_duplicates(name_kh: str = Query(..., max_length=255), date_of_birth: date = Query(...),
+                    exclude_id: int | None = None, db: Session = Depends(get_db),
+                    user: User = Depends(require("soldiers", "view"))):
+    """Soldiers already in the system with the same name (spaces ignored) and birth date: the form warns before a
+    second military ID is given to the same person. Soldiers outside the user's units show only their ID and name."""
+    found = possible_duplicates(db, [(name_kh, date_of_birth)], [exclude_id] if exclude_id else ())
+    scope = scope_unit_ids(db, user)
+    out = []
+    for s in sorted((s for group in found.values() for s in group), key=lambda s: s.id):
+        visible = scope is None or s.current_unit_id in scope
+        out.append({"id": s.id if visible else None, "military_id": s.military_id, "name_kh": s.name_kh,
+                    "date_of_birth": s.date_of_birth.isoformat(),
+                    "rank_name": s.rank.name_kh if visible and s.rank else None,
+                    "unit_name": s.unit.name_kh if visible and s.unit else None,
+                    "status_name": s.status.name_kh if visible and s.status else None})
+    return out
 
 
 # ---------------- Excel import (ការងារបញ្ចូលក្របខ័ណ្ឌយោធិនអាជីព) & comparison (ការប្រៀបធៀប) ----------------

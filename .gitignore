@@ -19,3 +19,5 @@ member_db.sql
 desktop.ini
 Thumbs.db
 /folderico-*.ico
+# daily backups (real personal data) – never commit
+backups/

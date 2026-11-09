@@ -53,8 +53,9 @@ def audit(db: Session, user: User | None, action: str, obj=None, before: dict | 
     ))
 
 
-def paginate(db: Session, stmt: Select, page: int, size: int) -> tuple[list, int]:
-    total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+def paginate(db: Session, stmt: Select, page: int, size: int, total: int | None = None) -> tuple[list, int]:
+    if total is None:
+        total = db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
     rows = db.scalars(stmt.offset((page - 1) * size).limit(size)).unique().all()
     return list(rows), total or 0
 

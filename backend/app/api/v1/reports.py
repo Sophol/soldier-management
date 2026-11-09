@@ -1,10 +1,12 @@
 """Dashboard statistics, alerts and reports (JSON for screen/print, XLSX for export)."""
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from hashlib import sha1
 from io import BytesIO
+from threading import Lock
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
@@ -34,6 +36,7 @@ from app.models import (
     AuditLog,
     AwardRecord,
     Category2Record,
+    DashboardSnapshot,
     Decision,
     DecisionItem,
     DisciplineRecord,
@@ -58,8 +61,10 @@ from app.models import (
 )
 from app.models.conscript import REGISTRATION_STATUSES
 from app.models.decision import DECISION_KINDS
+from app.services import background, exports
+from app.services.background import db_lock, submit
 from app.services.cards import CARD_REASONS, CARD_STATUS, OUTDATED, card_status, outdated_card_clause, outdated_reasons
-from app.services.common import in_batches, paginate, scope_unit_ids, unit_subtree_ids
+from app.services.common import audit, in_batches, paginate, scope_unit_ids, unit_subtree_ids
 from app.services.soldier import age, diff_ym, soldier_summary, years_to_next_rank, ym_text
 from app.services.soldier_io import MAX_EXPORT_ROWS
 from app.services.staffing import serving
@@ -114,11 +119,10 @@ def promotion_clause(db: Session):
     return or_(*conds) if conds else false()
 
 
-def promotion_due(db: Session, user: User, unit_id: int | None = None) -> list[Soldier]:
-    """Soldiers whose time in rank reached the minimum for their service track (administrative / combat)."""
-    stmt = active_soldiers(db, user, unit_id).join(Rank, Rank.id == Soldier.current_rank_id).where(
-        promotion_clause(db)).order_by(Rank.sort_order.desc(), Soldier.rank_date)
-    return list(db.scalars(stmt).unique())
+def promotion_due(db: Session, user: User, unit_id: int | None = None):
+    """Soldiers whose time in rank reached the minimum for their service track (administrative / combat): a query."""
+    return active_soldiers(db, user, unit_id).join(Rank, Rank.id == Soldier.current_rank_id).where(
+        promotion_clause(db)).order_by(Rank.sort_order.desc(), Soldier.rank_date, Soldier.id)
 
 
 def retirement_ages(db: Session) -> dict[str, int]:
@@ -163,58 +167,84 @@ def retiring_by(db: Session, stmt, horizon: date) -> list[tuple[Soldier, date]]:
     return sorted(out, key=lambda x: x[1])
 
 
+# The dashboard's figures (DashboardSnapshot, one per user scope) are counted in the background and kept for
+# `dashboard_refresh_minutes`: opening the dashboard reads them (with 500,000 soldiers counting takes seconds).
+# Older ones are still shown while they are counted again; "refresh" counts them at once.
+_refreshing: set[str] = set()  # scopes queued in this worker
+_refreshing_lock = Lock()
+
+
+def _scope_key(scope) -> str:
+    return "all" if scope is None else "units:" + sha1(",".join(map(str, sorted(scope))).encode()).hexdigest()
+
+
+def _refresh_minutes(db: Session) -> int:
+    try:
+        return max(int(get_setting(db, "dashboard_refresh_minutes", "5") or 5), 0)
+    except ValueError:
+        return 5
+
+
+def _is_fresh(snap: DashboardSnapshot | None, fresh_after: datetime) -> bool:
+    return snap is not None and snap.computed_at >= fresh_after and snap.computed_at.date() == date.today()
+
+
+def _count_and_store(db: Session, user: User, scope, key: str, fresh_after: datetime,
+                     wait_seconds: int) -> DashboardSnapshot | None:
+    """Counts the figures of `key` unless another worker counted them since `fresh_after` (one at a time)."""
+    with db_lock(f"dashboard:{key}", wait_seconds) as got:
+        db.commit()  # a new transaction sees what another worker stored meanwhile
+        snap = db.get(DashboardSnapshot, key, populate_existing=True)
+        if not got or _is_fresh(snap, fresh_after):
+            return snap
+        data = _dashboard_figures(db, user, scope)
+        if snap is None:
+            snap = DashboardSnapshot(scope_key=key, data=data, computed_at=datetime.now().replace(microsecond=0))
+            db.add(snap)
+        else:
+            snap.data, snap.computed_at = data, datetime.now().replace(microsecond=0)
+        db.commit()
+        return snap
+
+
+def _refresh_later(user_id: int, key: str) -> None:
+    with _refreshing_lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+
+    def run(bg: Session):
+        try:
+            user = bg.get(User, user_id)
+            if user is not None:
+                ttl = timedelta(minutes=_refresh_minutes(bg))
+                _count_and_store(bg, user, scope_unit_ids(bg, user), key, datetime.now() - ttl, 0)
+        finally:
+            with _refreshing_lock:
+                _refreshing.discard(key)
+    submit(background.counts, run, "counting the dashboard")
+
+
 @router.get("/dashboard/summary")
-def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashboard", "view"))):
-    today = date.today()
-    # every count is done by the database (COUNT / GROUP BY): no soldier is loaded, whatever the strength
-    def counts(*cols, joins=()):
-        stmt = select(*cols, func.count(Soldier.id)).select_from(Soldier)
-        for target, on in joins:
-            stmt = stmt.outerjoin(target, on)
-        return db.execute(active_soldiers(db, user, stmt=stmt).group_by(*cols)).all()
-
-    def count_where(cond) -> int:
-        return db.scalar(active_soldiers(db, user, stmt=select(func.count(Soldier.id)).select_from(Soldier)).where(cond))
-
-    missing_conds = {
-        "photo": or_(Soldier.photo_path.is_(None), Soldier.photo_path == ""),
-        "national_id": or_(Soldier.national_id.is_(None), Soldier.national_id == ""),
-        "unit": Soldier.current_unit_id.is_(None),
-        "dob": Soldier.date_of_birth.is_(None),
-        "enlistment": Soldier.enlistment_date.is_(None),
-        "rank_date": Soldier.rank_date.is_(None),
-    }
-    totals = db.execute(active_soldiers(db, user, stmt=select(
-        func.count(Soldier.id), *(func.coalesce(func.sum(case((cond, 1), else_=0)), 0) for cond in missing_conds.values()),
-    ).select_from(Soldier))).one()
-    total_active, missing = totals[0], dict(zip(missing_conds, totals[1:], strict=True))
-
-    by_class, by_gender, by_status, by_institution = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
-    for name, n in counts(RankClass.name_kh, joins=[(Rank, Rank.id == Soldier.current_rank_id),
-                                                     (RankClass, RankClass.id == Rank.rank_class_id)]):
-        by_class[name or "មិនទាន់កំណត់"] += n
-    for gender, n in counts(Soldier.gender):
-        by_gender["ប្រុស" if gender == "M" else "ស្រី"] += n
-    for name, n in counts(Lookup.name_kh):  # serving() already joins the status lookup
-        by_status[name or "មិនទាន់កំណត់"] += n
-    institutions = {u.id: u.name_kh for u in db.scalars(select(Unit).where(Unit.level == 1))}
-    paths = dict(db.execute(select(Unit.id, Unit.path)).all())
-    for unit_id, n in counts(Soldier.current_unit_id):
-        root = int(paths[unit_id].strip("/").split("/")[0]) if unit_id in paths else None
-        by_institution[institutions.get(root, "មិនទាន់កំណត់")] += n
-
+def dashboard(refresh: bool = False, db: Session = Depends(get_db),
+              user: User = Depends(require("dashboard", "view"))):
     scope = scope_unit_ids(db, user)
-    total_stmt = select(func.count(Soldier.id)).where(Soldier.deleted_at.is_(None))
-    if scope is not None:
-        total_stmt = total_stmt.where(Soldier.current_unit_id.in_(scope))
-    total_all = db.scalar(total_stmt)
-    doc_in_month = db.scalar(select(func.count(DocumentIncoming.id)).where(
-        DocumentIncoming.deleted_at.is_(None), extract("year", DocumentIncoming.doc_date) == today.year,
-        extract("month", DocumentIncoming.doc_date) == today.month))
-    doc_out_month = db.scalar(select(func.count(DocumentOutgoing.id)).where(
-        DocumentOutgoing.deleted_at.is_(None), extract("year", DocumentOutgoing.doc_date) == today.year,
-        extract("month", DocumentOutgoing.doc_date) == today.month))
-    # decisions still in the approval workflow, per kind; those waiting at a step this user acts on; overdue ones
+    key = _scope_key(scope)
+    now = datetime.now()
+    fresh_after = now - timedelta(minutes=_refresh_minutes(db))
+    snap = db.get(DashboardSnapshot, key)
+    if refresh or snap is None:  # counted now (waiting for another worker already counting them)
+        snap = _count_and_store(db, user, scope, key, now if refresh else fresh_after, 120)
+    elif not _is_fresh(snap, fresh_after):
+        _refresh_later(user.id, key)
+    data = snap.data if snap is not None else _dashboard_figures(db, user, scope)
+    computed = snap.computed_at if snap is not None else now
+    return {**data, "computed_at": computed.isoformat(timespec="seconds"), **_dashboard_workflow(db, user)}
+
+
+def _dashboard_workflow(db: Session, user: User) -> dict:
+    """Decisions still in the approval workflow, per kind; those waiting at a step this user acts on; overdue ones
+    (per user, so never cached)."""
     live = select(Decision.kind, Decision.status, Decision.status_changed_at).where(
         Decision.deleted_at.is_(None), Decision.status.in_(IN_PROGRESS))
     if (visible := visible_condition(db, user)) is not None:  # what the lists behind these counts show
@@ -225,9 +255,57 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
         pending[k] += 1
     mine = {st for st in IN_PROGRESS if can_act_at(user, st)}
     cutoff = overdue_cutoff(db)
-    waiting_for_me = sum(1 for _, st, _ in in_workflow if st in mine)
-    overdue = sum(1 for _, _, changed in in_workflow if changed and changed < cutoff)
+    return {"pending_decisions": {k: pending.get(k, 0) for k in DECISION_KINDS},
+            "workflow": {"waiting_for_me": sum(1 for _, st, _ in in_workflow if st in mine),
+                         "overdue": sum(1 for _, _, changed in in_workflow if changed and changed < cutoff)}}
 
+
+def _dashboard_figures(db: Session, user: User, scope) -> dict:
+    today = date.today()
+    # every count is done by the database: one GROUP BY over the serving soldiers gives the totals by rank class,
+    # gender, status and unit and the alerts on them (no soldier is loaded, and the strength is read once)
+    missing_conds = {
+        "photo": or_(Soldier.photo_path.is_(None), Soldier.photo_path == ""),
+        "national_id": or_(Soldier.national_id.is_(None), Soldier.national_id == ""),
+        "unit": Soldier.current_unit_id.is_(None),
+        "dob": Soldier.date_of_birth.is_(None),
+        "enlistment": Soldier.enlistment_date.is_(None),
+        "rank_date": Soldier.rank_date.is_(None),
+    }
+    alert_conds = {"promotion_due": promotion_clause(db),
+                   "retirement_due": retiring_clause(db, retirement_horizon(db)), **missing_conds}
+    groups = (RankClass.name_kh, Soldier.gender, Lookup.name_kh, Soldier.current_unit_id)  # serving() joins Lookup
+    stmt = select(*groups, func.count(Soldier.id),
+                  *(func.coalesce(func.sum(case((cond, 1), else_=0)), 0) for cond in alert_conds.values())
+                  ).select_from(Soldier).outerjoin(Rank, Rank.id == Soldier.current_rank_id).outerjoin(
+                  RankClass, RankClass.id == Rank.rank_class_id)
+    rows = db.execute(active_soldiers(db, user, stmt=stmt).group_by(*groups)).all()
+
+    institutions = {u.id: u.name_kh for u in db.scalars(select(Unit).where(Unit.level == 1))}
+    paths = dict(db.execute(select(Unit.id, Unit.path)).all())
+    total_active = 0
+    alerts = dict.fromkeys(alert_conds, 0)
+    by_class, by_gender, by_status, by_institution = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
+    for class_name, gender, status_name, unit_id, n, *sums in rows:
+        total_active += n
+        for k, v in zip(alert_conds, sums, strict=True):
+            alerts[k] += int(v)
+        by_class[class_name or "មិនទាន់កំណត់"] += n
+        by_gender["ប្រុស" if gender == "M" else "ស្រី"] += n
+        by_status[status_name or "មិនទាន់កំណត់"] += n
+        root = int(paths[unit_id].strip("/").split("/")[0]) if unit_id in paths else None
+        by_institution[institutions.get(root, "មិនទាន់កំណត់")] += n
+
+    total_stmt = select(func.count(Soldier.id)).where(Soldier.deleted_at.is_(None))
+    if scope is not None:
+        total_stmt = total_stmt.where(Soldier.current_unit_id.in_(scope))
+    total_all = db.scalar(total_stmt)
+    doc_in_month = db.scalar(select(func.count(DocumentIncoming.id)).where(
+        DocumentIncoming.deleted_at.is_(None), extract("year", DocumentIncoming.doc_date) == today.year,
+        extract("month", DocumentIncoming.doc_date) == today.month))
+    doc_out_month = db.scalar(select(func.count(DocumentOutgoing.id)).where(
+        DocumentOutgoing.deleted_at.is_(None), extract("year", DocumentOutgoing.doc_date) == today.year,
+        extract("month", DocumentOutgoing.doc_date) == today.month))
     # strength in/out for the last 12 months
     start = date(today.year - 1, today.month, 1)
     yy_col = extract("year", StrengthMovement.movement_date).label("yy")
@@ -268,15 +346,13 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(require("dashb
         "by_status": dict(by_status),
         "by_institution": dict(by_institution),
         "documents": {"incoming_month": doc_in_month, "outgoing_month": doc_out_month},
-        "pending_decisions": {k: pending.get(k, 0) for k in DECISION_KINDS},
-        "workflow": {"waiting_for_me": waiting_for_me, "overdue": overdue},
         "movements": {"months": months, "in": list(series["in"].values()), "out": list(series["out"].values())},
         "alerts": {
-            "promotion_due": count_where(promotion_clause(db)),
-            "retirement_due": count_where(retiring_clause(db, retirement_horizon(db))),
+            "promotion_due": alerts["promotion_due"],
+            "retirement_due": alerts["retirement_due"],
             "discipline_ending": disc_ending,
             "cards_expiring": cards_expiring,
-            **{f"missing_{k}": int(v) for k, v in missing.items()},
+            **{f"missing_{k}": alerts[k] for k in missing_conds},
         },
         # យោធិនប្រភេទ១ = serving soldiers; ប្រភេទ២ = soldiers moved to category 2 (no longer in the strength)
         "categories": {"category1": total_active, **_category2_counts(db, scope)},
@@ -549,10 +625,16 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
             stmt = stmt.where(StrengthMovement.unit_id.in_(scope))
         if unit_ids is not None:
             stmt = stmt.where(StrengthMovement.unit_id.in_(unit_ids))
-        ins = outs = 0
-        for m in db.scalars(stmt.order_by(StrengthMovement.movement_date)).unique():
-            ins += m.direction == "in"
-            outs += m.direction == "out"
+        counts = dict(db.execute(stmt.with_only_columns(StrengthMovement.direction, func.count())
+                                 .group_by(StrengthMovement.direction)).all())
+        ins, outs = counts.get("in", 0), counts.get("out", 0)
+        stmt = stmt.order_by(StrengthMovement.movement_date, StrengthMovement.id)
+        if page:
+            movements, _ = paginate(db, stmt, page, size, total=ins + outs)
+            paging, first = {"page": page, "size": size, "total": ins + outs}, (page - 1) * size
+        else:
+            movements = in_batches(db, stmt)
+        for m in movements:
             rows.append({"movement_date": m.movement_date.isoformat(), "direction": "កើន" if m.direction == "in" else "ថយ",
                          "reason": MOVEMENT_REASONS.get(m.reason, m.reason), **_soldier_cells(m.soldier),
                          "unit_name": m.unit.name_kh if m.unit else "", "note": m.note or ""})
@@ -588,14 +670,24 @@ def build_report(db: Session, user: User, key: str, date_from: date | None, date
     elif key == "promotion_due":
         cols = SOLDIER_COLS + [("unit_name", "អង្គភាព"), ("rank_date", "ថ្ងៃឡើងស័ក្តិ"), ("time_in_rank", "រយៈពេលឡើងស័ក្តិ"),
                                ("min_years", "លក្ខខណ្ឌ (ឆ្នាំ)")]
-        for s in promotion_due(db, user, unit_id):
+        stmt = promotion_due(db, user, unit_id)
+        if page:
+            soldiers, total = paginate(db, stmt, page, size)
+            paging, first = {"page": page, "size": size, "total": total}, (page - 1) * size
+        else:
+            soldiers = in_batches(db, stmt)
+        for s in soldiers:
             rows.append({**_soldier_cells(s), "rank_date": s.rank_date.isoformat(),
                          "time_in_rank": ym_text(diff_ym(s.rank_date)), "min_years": years_to_next_rank(s)})
 
     elif key == "retirement_due":
         cols = SOLDIER_COLS + [("unit_name", "អង្គភាព"), ("date_of_birth", "ថ្ងៃខែឆ្នាំកំណើត"), ("age", "អាយុ"),
                                ("retire_date", "ថ្ងៃគ្រប់អាយុនិវត្តន៍")]
-        for s, rd in retirement_due(db, user, unit_id):
+        found = retirement_due(db, user, unit_id)
+        if page:
+            paging, first = {"page": page, "size": size, "total": len(found)}, (page - 1) * size
+            found = found[first:first + size]
+        for s, rd in found:
             rows.append({**_soldier_cells(s), "date_of_birth": s.date_of_birth.isoformat(),
                          "age": age(s.date_of_birth), "retire_date": rd.isoformat()})
 
@@ -853,6 +945,26 @@ def run_report(key: str, date_from: date | None = None, date_to: date | None = N
                        page=page if format == "json" else None, size=size)
     if format == "json":
         return rep
+    return StreamingResponse(report_workbook(rep, key), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f"attachment; filename={key}.xlsx"})
+
+
+@router.post("/reports/{key}/export-jobs", status_code=202)
+def run_report_later(key: str, request: Request, date_from: date | None = None, date_to: date | None = None,
+                     unit_id: int | None = None, kind: str | None = None, fields: str | None = None,
+                     db: Session = Depends(get_db), user: User = Depends(require("reports", "export"))):
+    """The report's Excel file made in the background (a long report takes minutes): follow /export-jobs/{id}."""
+    if key not in REPORTS:
+        raise HTTPException(404, "រកមិនឃើញរបាយការណ៍")
+
+    def build(bg: Session, u: User):
+        return report_workbook(build_report(bg, u, key, date_from, date_to, unit_id, kind, fields, page=None), key)
+    audit(db, user, "export", table="reports", record_id=key, request=request)
+    job = exports.start(db, user, f"report:{key}", REPORTS[key], f"{key}.xlsx", build)
+    return exports.job_dict(job)
+
+
+def report_workbook(rep: dict, key: str) -> BytesIO:
     # write-only: rows go straight to the file (the soldier list's rows are streamed from the database)
     wb = Workbook(write_only=True)
     ws = wb.create_sheet(key[:30])
@@ -878,5 +990,4 @@ def run_report(key: str, date_from: date | None = None, date_to: date | None = N
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
-    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                             headers={"Content-Disposition": f"attachment; filename={key}.xlsx"})
+    return buf

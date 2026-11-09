@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     LOCKOUT_MINUTES: int = 15
     # how often approved decisions whose effective date has come are applied to the soldiers (0 = never: tests)
     DECISION_APPLY_MINUTES: int = 30
+    # how often the activity log is trimmed to its retention and old Excel exports removed (0 = never: tests)
+    MAINTENANCE_MINUTES: int = 60
 
     @property
     def storage_path(self) -> Path:

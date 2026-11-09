@@ -16,7 +16,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Lookup, Position, Rank, Soldier, Specialty, Unit
-from app.services.soldier import dates_error, format_military_id, is_separated, not_separated, unit_chain
+from app.services.soldier import (
+    dates_error,
+    format_military_id,
+    is_separated,
+    name_key,
+    not_separated,
+    possible_duplicates,
+    unit_chain,
+)
 
 
 @dataclass(frozen=True)
@@ -358,13 +366,35 @@ def plan_import(db: Session, rows: list[dict], update_existing: bool, scope: lis
             errs.append("អង្គភាពនៅក្រៅសិទ្ធិរបស់អ្នក")
         if errs:
             r["action"] = "error"
+    _duplicate_warnings(db, rows)
     return rows
+
+
+def _duplicate_warnings(db: Session, rows: list[dict]) -> None:
+    """A new soldier with the name and birth date of one already in the system, or of another new row of the file,
+    may be the same person entered under a second military ID: a warning (the row is still imported)."""
+    new = [r for r in rows if r["action"] == "create"]
+    for r in rows:
+        r.setdefault("warnings", [])
+    keys = {id(r): (name_key(r["values"].get("name_kh")), r["values"].get("date_of_birth")) for r in new}
+    existing = possible_duplicates(db, [(r["values"].get("name_kh"), r["values"].get("date_of_birth")) for r in new])
+    in_file: dict[tuple, list[dict]] = {}
+    for r in new:
+        if keys[id(r)][0] and keys[id(r)][1]:
+            in_file.setdefault(keys[id(r)], []).append(r)
+    for r in new:
+        key = keys[id(r)]
+        for s in existing.get(key, []):
+            r["warnings"].append(f"ឈ្មោះ និងថ្ងៃកំណើតដូចយោធិន {s.military_id} ({s.name_kh}) ដែលមានក្នុងប្រព័ន្ធ")
+        others = [o["row"] for o in in_file.get(key, []) if o is not r]
+        if others:
+            r["warnings"].append("ឈ្មោះ និងថ្ងៃកំណើតដូចជួរ " + ", ".join(str(n) for n in others) + " ក្នុងឯកសារ")
 
 
 def import_summary(rows: list[dict]) -> dict:
     count = {a: sum(1 for r in rows if r["action"] == a) for a in ("create", "update", "error")}
-    return {**count, "total": len(rows),
-            "rows": [{k: r.get(k) for k in ("row", "action", "errors", "name_kh", "soldier_id")}
+    return {**count, "total": len(rows), "warning": sum(1 for r in rows if r.get("warnings")),
+            "rows": [{k: r.get(k) for k in ("row", "action", "errors", "warnings", "name_kh", "soldier_id")}
                      | {"military_id": r["values"].get("military_id")} for r in rows]}
 
 

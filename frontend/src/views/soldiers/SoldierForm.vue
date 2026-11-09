@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useLookups } from '@/stores/lookups'
 import UnitTreeSelect from '@/components/UnitTreeSelect.vue'
@@ -89,6 +89,24 @@ function pickPhoto(file) {
   return false
 }
 
+// soldiers already in the system with the same name and birth date (the same person under a second military ID?)
+const dupes = ref([])
+let dupeSeq = 0
+let dupeTimer = null
+async function checkDupes() {
+  const { name_kh: name, date_of_birth: dob } = form.value
+  const seq = ++dupeSeq
+  if (!name?.trim() || !dob) { dupes.value = []; return }
+  try {
+    const { data } = await http.get('/soldiers/duplicates', { params: { name_kh: name, date_of_birth: dob, exclude_id: id.value || undefined }, silent: true })
+    if (seq === dupeSeq) dupes.value = data
+  } catch { /* only a warning */ }
+}
+watch(() => [form.value.name_kh, form.value.date_of_birth], () => {
+  clearTimeout(dupeTimer)
+  dupeTimer = setTimeout(checkDupes, 400)
+})
+
 async function save() {
   try {
     await formRef.value.validate()
@@ -96,6 +114,17 @@ async function save() {
     tab.value = 'general'
     ElMessage.warning('សូមបំពេញព័ត៌មានដែលចាំបាច់')
     return
+  }
+  if (!id.value) {
+    clearTimeout(dupeTimer)
+    await checkDupes()
+    if (dupes.value.length) {
+      try {
+        await ElMessageBox.confirm(
+          `មានយោធិនឈ្មោះ និងថ្ងៃកំណើតដូចគ្នារួចហើយ៖ ${dupes.value.map((d) => `${d.military_id} ${d.name_kh}`).join(', ')}។ តើជាមនុស្សផ្សេងគ្នាមែនទេ? នៅតែរក្សាទុក?`,
+          'ប្រហែលជាយោធិនស្ទួន', { type: 'warning', confirmButtonText: 'នៅតែរក្សាទុក', cancelButtonText: 'ពិនិត្យវិញ' })
+      } catch { return }
+    }
   }
   saving.value = true
   try {
@@ -138,6 +167,15 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
         <el-button type="primary" icon="Check" :loading="saving" @click="save">រក្សាទុក</el-button>
       </div>
     </div>
+
+    <el-alert v-if="dupes.length" type="warning" show-icon :closable="false" class="dupes"
+              title="ប្រហែលជាយោធិនស្ទួន៖ មានយោធិនឈ្មោះ និងថ្ងៃកំណើតដូចគ្នាក្នុងប្រព័ន្ធរួចហើយ">
+      <div v-for="d in dupes" :key="d.military_id">
+        <router-link v-if="d.id" :to="`/soldiers/${d.id}`" target="_blank">{{ d.military_id }} — {{ d.name_kh }}</router-link>
+        <span v-else>{{ d.military_id }} — {{ d.name_kh }} (នៅក្រៅអង្គភាពរបស់អ្នក)</span>
+        <span v-if="d.rank_name || d.unit_name" class="muted"> · {{ [d.rank_name, d.unit_name, d.status_name].filter(Boolean).join(' · ') }}</span>
+      </div>
+    </el-alert>
 
     <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
       <el-card shadow="never">
@@ -319,4 +357,5 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
 .add-row { margin-top: 8px; }
 .el-select { width: 100%; }
 @media (max-width: 900px) { .general { flex-direction: column; } }
+.dupes { margin-bottom: 12px; }
 </style>

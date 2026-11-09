@@ -16,6 +16,7 @@ MODULES: dict[str, str] = {
     "decisions_appoint": "តែងតាំងមុខតំណែង",
     "decisions_transfer": "ផ្លាស់ប្ដូរ",
     "decisions_promote": "ដំឡើងឋានន្តរស័ក្តិ",
+    "rank_position_update": "Update ស័ក្តិ និងមុខតំណែង",
     "training": "ការងារបណ្ដុះបណ្ដាល",
     "discipline": "ការងារវិន័យ និងទណ្ឌកម្ម",
     "awards": "ការងារសរសើរ និងគ្រឿងឥស្សរិយយស",
@@ -45,6 +46,7 @@ SYSTEM_MODULES = {"users", "roles", "settings", "audit"}
 MODULE_ACTIONS: dict[str, list[str]] = {
     **{m: ["approve"] for m in MODULES if m.startswith("wf_")},
     "conscript_medical": ["view", "create", "update", "delete"],
+    "rank_position_update": ["update"],  # the page only changes soldiers: no list of its own
 }
 
 

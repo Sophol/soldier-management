@@ -1,8 +1,9 @@
 <script setup>
 /** ការប្រៀបធៀប: compare an Excel list with the soldier list on the chosen fields (matched by military ID). */
 import { computed, onMounted, ref } from 'vue'
-import http, { download } from '@/api/http'
+import http from '@/api/http'
 import UnitTreeSelect from '@/components/UnitTreeSelect.vue'
+import { exportInBackground } from '@/utils/exportJob'
 import { num } from '@/utils/format'
 
 const file = ref(null)
@@ -11,6 +12,11 @@ const catalog = ref([])
 const unitId = ref(null)
 const result = ref(null)
 const busy = ref(false)
+const exporting = ref(false)
+function exportAll() {
+  exporting.value = true
+  exportInBackground('/soldiers/export-jobs', {}, 'soldiers.xlsx').finally(() => { exporting.value = false })
+}
 const show = ref('different')
 const STATUS = {
   same: ['ដូចគ្នា', 'success'], different: ['ខុសគ្នា', 'danger'],
@@ -64,7 +70,7 @@ const rows = computed(() => (result.value?.rows || []).filter((r) => show.value 
     <div class="page-head">
       <h2>ការប្រៀបធៀបបញ្ជីយោធិន ជាមួយឯកសារ Excel</h2>
       <div class="head-actions">
-        <el-button icon="Download" @click="download('/soldiers/export', {}, 'soldiers.xlsx')">នាំចេញបញ្ជីបច្ចុប្បន្ន</el-button>
+        <el-button icon="Download" :loading="exporting" @click="exportAll">នាំចេញបញ្ជីបច្ចុប្បន្ន</el-button>
       </div>
     </div>
 

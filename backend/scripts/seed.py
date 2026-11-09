@@ -230,6 +230,8 @@ SETTINGS = [
     ("retirement_age_female", "55", "Retirement age – female (confirm with office)"),
     ("alert_months_ahead", "6", "Months ahead for retirement alerts"),
     ("workflow_overdue_days", "3", "Days a decision may wait at one approval step before it is flagged"),
+    ("dashboard_refresh_minutes", "5", "Minutes the dashboard figures are kept before they are counted again"),
+    ("audit_retention_years", "3", "Years the activity log is kept (0 = keep everything)"),
     # About page (អំពីយើង): contact and full user manual link, empty until the office fills them in
     ("contact_name", "", "About page: contact unit / person in charge"),
     ("contact_phone", "", "About page: contact phone"),
@@ -348,9 +350,10 @@ def main(admin_password: str, source_dir: Path = PROJECT_ROOT) -> None:
 
         for cat, items in LOOKUPS.items():
             existing = db.scalars(select(Lookup).where(Lookup.category == cat)).all()
-            if existing and cat != "specialty_section":
+            if existing and cat not in ("specialty_section", "soldier_status"):
                 continue
-            # sections grew later: add the ones missing by code or Khmer name, after the existing ones
+            # sections grew later, and the system reads the soldier statuses by code (a migration may have added
+            # one of them first): add the ones missing by code or Khmer name, after the existing ones
             have = {lk.code for lk in existing} | {lk.name_kh for lk in existing}
             order = max((lk.sort_order for lk in existing), default=0)
             for code, kh, en in items:

@@ -40,6 +40,7 @@ export const menu = [
       { key: 'appoint', to: '/decisions/appoint', perm: 'decisions_appoint.view' },
       { key: 'transfer', to: '/decisions/transfer', perm: 'decisions_transfer.view' },
       { key: 'promote', to: '/decisions/promote', perm: 'decisions_promote.view' },
+      { key: 'rankPositionUpdate', to: '/decisions/rank-position-update', perm: 'rank_position_update.update' },
     ],
   },
   {

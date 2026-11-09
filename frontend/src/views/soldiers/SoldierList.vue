@@ -2,13 +2,14 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import http, { download } from '@/api/http'
+import http from '@/api/http'
 import { useAuth } from '@/stores/auth'
 import { useLookups } from '@/stores/lookups'
 import SavedFilters from '@/components/SavedFilters.vue'
 import UnitTreeSelect from '@/components/UnitTreeSelect.vue'
 import { useTableHeight } from '@/composables/useTableHeight'
 import { fmtDate, genderText, num } from '@/utils/format'
+import { exportInBackground } from '@/utils/exportJob'
 import { fetchAll, filterSummary, printList } from '@/utils/listExport'
 
 const tableHeight = useTableHeight()
@@ -21,6 +22,7 @@ const rows = ref([])
 const total = ref(0)
 const loading = ref(false)
 const exporting = ref(false)
+const xlsxBusy = ref(false)
 const showAdvanced = ref(false)
 const tab = ref('service')
 const blank = {
@@ -209,7 +211,8 @@ function exportXlsx() {
   const p = params()
   delete p.page
   delete p.size
-  download('/soldiers/export', p, 'soldiers.xlsx')
+  xlsxBusy.value = true
+  exportInBackground('/soldiers/export-jobs', p, 'soldiers.xlsx').finally(() => { xlsxBusy.value = false })
 }
 
 // PDF: the printable list of every soldier matching the filter
@@ -251,7 +254,7 @@ onMounted(async () => {
       <h2>បញ្ជីយោធិន</h2>
       <div class="head-actions">
         <SavedFilters module="soldiers" :current="filterValues" @apply="applySaved" />
-        <el-button v-if="auth.can('soldiers.export')" icon="Download" @click="exportXlsx">នាំចេញ Excel</el-button>
+        <el-button v-if="auth.can('soldiers.export')" icon="Download" :loading="xlsxBusy" @click="exportXlsx">នាំចេញ Excel</el-button>
         <el-button v-if="auth.can('soldiers.print')" icon="Printer" :loading="exporting" @click="exportPdf">បោះពុម្ព / PDF</el-button>
         <el-button v-if="auth.can('soldiers.create')" type="primary" icon="Plus" @click="router.push('/soldiers/new')">បញ្ចូលយោធិនថ្មី</el-button>
       </div>

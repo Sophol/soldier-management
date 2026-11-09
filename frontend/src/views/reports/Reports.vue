@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import http, { download } from '@/api/http'
+import http from '@/api/http'
 import { useAuth } from '@/stores/auth'
 import UnitTreeSelect from '@/components/UnitTreeSelect.vue'
+import { exportInBackground } from '@/utils/exportJob'
 import { fmtDate, num, todayISO } from '@/utils/format'
 
 const route = useRoute()
@@ -19,8 +20,9 @@ const f = reactive({
 })
 // soldier list: the fields to show (ជ្រើសរើសព័ត៌មាន); the server sends the full catalog with the report
 const fieldCatalog = ref([])
-// soldier list: shown one page at a time (the Excel file has every row)
+// the long lists are shown one page at a time (the Excel file has every row)
 const paging = reactive({ page: 1, size: 100 })
+const PAGED = ['soldier_list', 'movements', 'promotion_due', 'retirement_due']
 
 const usesDates = computed(() => ['movements', 'decisions', 'decision_status', 'training', 'discipline', 'awards', 'retirement', 'category2', 'separation', 'conscripts'].includes(f.key))
 const DECISION_KINDS = [{ value: 'appoint', label: 'តែងតាំង' }, { value: 'transfer', label: 'ផ្លាស់ប្ដូរ' }, { value: 'promote', label: 'ដំឡើងស័ក្តិ' }]
@@ -39,7 +41,7 @@ const kindOptions = computed(() => ({
 function params() {
   const p = { unit_id: f.unit_id || undefined, kind: f.kind || undefined }
   if (f.key === 'soldier_list' && f.fields.length) p.fields = f.fields.join(',')
-  if (f.key === 'soldier_list') Object.assign(p, { page: paging.page, size: paging.size })
+  if (PAGED.includes(f.key)) Object.assign(p, { page: paging.page, size: paging.size })
   if (usesDates.value) Object.assign(p, { date_from: f.date_from, date_to: f.date_to })
   return p
 }
@@ -62,11 +64,13 @@ function search() {
   run()
 }
 
+const exporting = ref(false)
 function exportXlsx() {
   const p = params()
   delete p.page // the file gets every row
   delete p.size
-  download(`/reports/${f.key}`, { ...p, format: 'xlsx' }, `${f.key}.xlsx`)
+  exporting.value = true
+  exportInBackground(`/reports/${f.key}/export-jobs`, p, `${f.key}.xlsx`).finally(() => { exporting.value = false })
 }
 
 function printReport() {
@@ -121,7 +125,7 @@ onMounted(async () => {
         <el-form-item>
           <el-button type="primary" native-type="submit" icon="Search">បង្ហាញ</el-button>
           <el-button v-if="auth.can('reports.print')" icon="Printer" @click="printReport">បោះពុម្ព</el-button>
-          <el-button v-if="auth.can('reports.export')" icon="Download" @click="exportXlsx">Excel</el-button>
+          <el-button v-if="auth.can('reports.export')" icon="Download" :loading="exporting" @click="exportXlsx">Excel</el-button>
         </el-form-item>
       </el-form>
     </el-card>
