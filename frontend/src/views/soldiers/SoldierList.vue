@@ -193,7 +193,7 @@ function removeChip(c) {
 }
 
 function onSort({ prop, order }) {
-  const map = { name_kh: 'name', military_id: 'military_id', rank_name: 'rank', enlistment_date: 'enlistment_date', age: 'date_of_birth' }
+  const map = { name_kh: 'name', military_id: 'military_id', rank_name: 'rank', enlistment_date: 'enlistment_date', date_of_birth: 'date_of_birth', age: 'date_of_birth' }
   paging.sort = map[prop] || 'rank'
   paging.order = order === 'ascending' ? 'asc' : 'desc'
   if (prop === 'age') paging.order = order === 'ascending' ? 'desc' : 'asc'
@@ -535,6 +535,9 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <el-table-column label="ភេទ" width="70"><template #default="{ row }">{{ genderText(row.gender) }}</template></el-table-column>
+        <el-table-column prop="date_of_birth" label="ថ្ងៃខែឆ្នាំកំណើត" width="140" sortable="custom">
+          <template #default="{ row }">{{ fmtDate(row.date_of_birth) }}</template>
+        </el-table-column>
         <el-table-column prop="age" label="អាយុ" width="80" sortable="custom"><template #default="{ row }">{{ num(row.age) }}</template></el-table-column>
         <el-table-column label="មុខតំណែង" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ row.position_name }}<div v-if="row.time_in_position" class="muted small">{{ num(row.time_in_position) }}</div></template>

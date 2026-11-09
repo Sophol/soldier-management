@@ -350,9 +350,9 @@ const addChild = () => form.value.children.push({ name: '', gender: null, date_o
 .general { display: flex; gap: 20px; align-items: flex-start; }
 .grow { flex: 1; }
 .photo-box { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.photo { width: 120px; height: 160px; border: 1px dashed #c8d0d6; border-radius: 6px; overflow: hidden; background: #f7f9fa; }
+.photo { width: 120px; height: 160px; border: 1px dashed var(--el-border-color); border-radius: 6px; overflow: hidden; background: var(--el-fill-color-lighter); }
 .photo img, .photo :deep(img) { width: 100%; height: 100%; object-fit: cover; }
-.photo-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #a0aab4; }
+.photo-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--el-text-color-placeholder); }
 .inline-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
 .add-row { margin-top: 8px; }
 .el-select { width: 100%; }

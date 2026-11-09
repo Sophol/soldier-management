@@ -79,6 +79,8 @@ export default {
     profile: 'Account',
     language: 'Language',
     khmerDigits: 'Khmer digits',
+    darkMode: 'Dark mode',
+    lightMode: 'Light mode',
     noData: 'No data',
     attachments: 'Attachments',
     upload: 'Upload',

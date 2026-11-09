@@ -122,7 +122,7 @@ const canMedical = computed(() => auth.can('conscript_medical.view'))
 .header { display: flex; gap: 20px; align-items: flex-start; }
 .grow { flex: 1; min-width: 0; }
 .photo-box { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.photo { width: 120px; height: 160px; border: 1px solid #dfe4e8; border-radius: 6px; overflow: hidden; background: #f7f9fa; }
+.photo { width: 120px; height: 160px; border: 1px solid var(--el-border-color-light); border-radius: 6px; overflow: hidden; background: var(--el-fill-color-lighter); }
 .photo :deep(img) { width: 100%; height: 100%; object-fit: cover; }
 .name { font-size: 20px; margin-bottom: 8px; }
 .chips { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }

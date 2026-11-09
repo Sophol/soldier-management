@@ -118,7 +118,7 @@ onMounted(load)
 
 <style scoped>
 .role { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-radius: 6px; cursor: pointer; }
-.role:hover { background: #f2f6f4; }
+.role:hover { background: var(--el-fill-color-light); }
 .role.active { background: var(--el-color-primary-light-9); border-left: 3px solid var(--el-color-primary); }
 .small { font-size: 12px; }
 .matrix-head { display: flex; justify-content: space-between; align-items: center; }

@@ -165,7 +165,7 @@ const money = (v) => (v == null ? '' : `${num(Number(v).toLocaleString('en-US'))
 <style scoped>
 .separated-note { margin-bottom: 12px; }
 .header { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
-.photo { width: 110px; height: 146px; border-radius: 6px; overflow: hidden; border: 1px solid #e1e6ea; }
+.photo { width: 110px; height: 146px; border-radius: 6px; overflow: hidden; border: 1px solid var(--el-border-color-light); }
 .photo :deep(img) { width: 100%; height: 100%; object-fit: cover; }
 .head-info { flex: 1; min-width: 280px; }
 .name { font-size: 20px; margin-bottom: 8px; }
